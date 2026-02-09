@@ -29,6 +29,9 @@ services:
       APP_URL: ${APP_URL}
       NODE_ENV: ${NODE_ENV}
       PORT: 4000
+    ports:
+      - "4001:4000"
+
     depends_on:
       postgres:
         condition: service_healthy
@@ -38,6 +41,8 @@ services:
 
   frontend:
     build: ./frontend
+    ports:
+      - "8081:80"
     restart: unless-stopped
     networks:
       - app-network
