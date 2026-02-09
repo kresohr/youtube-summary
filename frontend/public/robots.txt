@@ -1,0 +1,4 @@
+User-agent: *
+Disallow: /fetch/summary
+Disallow: /fetch/configure
+Disallow: /fetch/api/
