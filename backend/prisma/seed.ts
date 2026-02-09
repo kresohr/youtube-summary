@@ -1,11 +1,11 @@
-import { PrismaClient } from '@prisma/client';
-import { PrismaPg } from '@prisma/adapter-pg';
-import { Pool } from 'pg';
-import bcrypt from 'bcrypt';
+import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
+import bcrypt from "bcrypt";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
-  throw new Error('DATABASE_URL is not defined');
+  throw new Error("DATABASE_URL is not defined");
 }
 
 const pool = new Pool({ connectionString });
@@ -13,18 +13,18 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 async function main() {
-  const hashedPassword = await bcrypt.hash('admin123', 10);
+  const hashedPassword = await bcrypt.hash("admin123", 10);
 
   const user = await prisma.user.upsert({
-    where: { username: 'admin' },
+    where: { username: "admin" },
     update: {},
     create: {
-      username: 'admin',
+      username: "admin",
       password: hashedPassword,
     },
   });
 
-  console.log('Seeded admin user:', user.username);
+  console.log("Seeded admin user:", user.username);
 }
 
 main()

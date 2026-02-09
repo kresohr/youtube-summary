@@ -30,19 +30,19 @@ See the **VPS Deployment** section below.
 
 ## Environment Variables
 
-| Variable | Description | Required |
-|---|---|---|
-| `DB_USER` | PostgreSQL username | ✅ |
-| `DB_PASSWORD` | PostgreSQL password | ✅ |
-| `DB_NAME` | PostgreSQL database name | ✅ |
-| `JWT_SECRET` | Secret for JWT tokens — generate with `openssl rand -base64 32` | ✅ |
-| `YOUTUBE_API_KEY` | YouTube Data API v3 key | ✅ |
-| `OPENROUTER_API_KEY` | OpenRouter API key for AI summaries | ✅ |
-| `APP_URL` | Public URL of the app (e.g. `https://yourdomain.com/fetch`) | ✅ |
-| `NODE_ENV` | `production` or `development` | ✅ |
-| `HTTP_PORT` | Host HTTP port (default `80`) | ❌ |
-| `HTTPS_PORT` | Host HTTPS port (default `443`) | ❌ |
-| `SSL_CERT_PATH` | Path to Let's Encrypt certs (default `./nginx/certs`) | ❌ |
+| Variable             | Description                                                     | Required |
+| -------------------- | --------------------------------------------------------------- | -------- |
+| `DB_USER`            | PostgreSQL username                                             | ✅       |
+| `DB_PASSWORD`        | PostgreSQL password                                             | ✅       |
+| `DB_NAME`            | PostgreSQL database name                                        | ✅       |
+| `JWT_SECRET`         | Secret for JWT tokens — generate with `openssl rand -base64 32` | ✅       |
+| `YOUTUBE_API_KEY`    | YouTube Data API v3 key                                         | ✅       |
+| `OPENROUTER_API_KEY` | OpenRouter API key for AI summaries                             | ✅       |
+| `APP_URL`            | Public URL of the app (e.g. `https://yourdomain.com/fetch`)     | ✅       |
+| `NODE_ENV`           | `production` or `development`                                   | ✅       |
+| `HTTP_PORT`          | Host HTTP port (default `80`)                                   | ❌       |
+| `HTTPS_PORT`         | Host HTTPS port (default `443`)                                 | ❌       |
+| `SSL_CERT_PATH`      | Path to Let's Encrypt certs (default `./nginx/certs`)           | ❌       |
 
 ## Architecture
 
@@ -72,6 +72,7 @@ postgres :5432 (exposed as 25433 on host)
 ## VPS Deployment
 
 ### Prerequisites
+
 - A VPS with Docker and Docker Compose installed
 - A domain name pointed to your VPS IP (A record)
 - Ports 80 and 443 open in your firewall
@@ -105,8 +106,10 @@ curl -I https://yourdomain.com/health
 ```
 
 ### SSL Certificate Renewal
+
 The `certbot` container automatically renews certificates every 12 hours.
 Nginx picks up new certs on its next reload. To manually force a reload:
+
 ```bash
 docker compose exec nginx nginx -s reload
 ```
