@@ -1,9 +1,9 @@
-import { Pool, QueryResult, QueryResultRow } from "pg";
+import { Pool, QueryResult, QueryResultRow } from 'pg';
 
 const connectionString = process.env.DATABASE_URL;
 
 if (!connectionString) {
-  throw new Error("DATABASE_URL is not defined");
+  throw new Error('DATABASE_URL is not defined');
 }
 
 const pool = new Pool({
@@ -13,8 +13,8 @@ const pool = new Pool({
   connectionTimeoutMillis: 2000,
 });
 
-pool.on("error", (err) => {
-  console.error("Unexpected database pool error:", err);
+pool.on('error', (err) => {
+  console.error('Unexpected database pool error:', err);
 });
 
 export async function query<T extends QueryResultRow = QueryResultRow>(

@@ -5,15 +5,13 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 
-COPY prisma ./prisma/
-COPY prisma.config.ts ./
-RUN DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy" npx prisma generate
-
 COPY tsconfig.json ./
 COPY src ./src
 
 RUN npm run build
 
+COPY init.sql ./init.sql
+
 EXPOSE 4000
 
-CMD ["sh", "-c", "npx prisma migrate deploy && npm start"]
+CMD ["npm", "start"]

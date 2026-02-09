@@ -1,4 +1,4 @@
-import prisma from '../lib/prisma.js';
+import { query } from "../lib/db.js";
 
 interface YouTubeVideoItem {
   id: { videoId: string };
@@ -29,12 +29,17 @@ interface TranscriptSegment {
 /**
  * Fetch latest videos from a YouTube channel published in the last N hours.
  */
-async function fetchLatestVideos(channelId: string, hoursAgo: number): Promise<ParsedVideo[]> {
-  const publishedAfter = new Date(Date.now() - hoursAgo * 60 * 60 * 1000).toISOString();
+async function fetchLatestVideos(
+  channelId: string,
+  hoursAgo: number
+): Promise<ParsedVideo[]> {
+  const publishedAfter = new Date(
+    Date.now() - hoursAgo * 60 * 60 * 1000
+  ).toISOString();
 
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey) {
-    console.error('YOUTUBE_API_KEY is not set');
+    console.error("YOUTUBE_API_KEY is not set");
     return [];
   }
 
@@ -48,7 +53,9 @@ async function fetchLatestVideos(channelId: string, hoursAgo: number): Promise<P
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error(`YouTube API error for channel ${channelId}: ${response.status} - ${errorText}`);
+    console.error(
+      `YouTube API error for channel ${channelId}: ${response.status} - ${errorText}`
+    );
     return [];
   }
 
@@ -70,14 +77,16 @@ async function fetchLatestVideos(channelId: string, hoursAgo: number): Promise<P
 /**
  * Get transcript from TubeText (free, no API key needed).
  */
-async function getTranscriptFromTubeText(videoId: string): Promise<string | null> {
+async function getTranscriptFromTubeText(
+  videoId: string
+): Promise<string | null> {
   try {
     const response = await fetch(
       `https://tubetext.app/api/transcript?videoId=${videoId}`,
       {
-        method: 'GET',
+        method: "GET",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
         },
       }
     );
@@ -93,13 +102,16 @@ async function getTranscriptFromTubeText(videoId: string): Promise<string | null
     if (data.transcript && Array.isArray(data.transcript)) {
       const fullTranscript = data.transcript
         .map((segment: TranscriptSegment) => segment.text)
-        .join(' ');
+        .join(" ");
       return fullTranscript;
     }
 
     return null;
   } catch (error) {
-    console.error(`Error fetching transcript from TubeText for ${videoId}:`, error);
+    console.error(
+      `Error fetching transcript from TubeText for ${videoId}:`,
+      error
+    );
     return null;
   }
 }
@@ -114,53 +126,58 @@ async function generateSummaryWithOpenRouter(
   try {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-      console.error('OPENROUTER_API_KEY is not set');
-      return transcript.substring(0, 300) + '...';
+      console.error("OPENROUTER_API_KEY is not set");
+      return transcript.substring(0, 300) + "...";
     }
 
     // Truncate transcript if too long
     const maxChars = 8000;
     const truncatedTranscript =
       transcript.length > maxChars
-        ? transcript.substring(0, maxChars) + '...'
+        ? transcript.substring(0, maxChars) + "..."
         : transcript;
 
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': process.env.APP_URL || 'https://gladansam.xyz/fetch',
-        'X-Title': 'YouTube Summary System',
-      },
-      body: JSON.stringify({
-        model: 'anthropic/claude-3.5-sonnet',
-        messages: [
-          {
-            role: 'system',
-            content:
-              'You are a helpful assistant that creates concise summaries of YouTube videos. Summarize the main points in 3-4 sentences.',
-          },
-          {
-            role: 'user',
-            content: `Summarize this YouTube video:\n\nTitle: ${videoTitle}\n\nTranscript:\n${truncatedTranscript}`,
-          },
-        ],
-        max_tokens: 200,
-        temperature: 0.7,
-      }),
-    });
+    const response = await fetch(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": process.env.APP_URL || "https://gladansam.xyz/fetch",
+          "X-Title": "YouTube Summary System",
+        },
+        body: JSON.stringify({
+          model: "anthropic/claude-3.5-sonnet",
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a helpful assistant that creates concise summaries of YouTube videos. Summarize the main points in 3-4 sentences.",
+            },
+            {
+              role: "user",
+              content: `Summarize this YouTube video:\n\nTitle: ${videoTitle}\n\nTranscript:\n${truncatedTranscript}`,
+            },
+          ],
+          max_tokens: 200,
+          temperature: 0.7,
+        }),
+      }
+    );
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`OpenRouter API error: ${response.status} - ${errorText}`);
+      throw new Error(
+        `OpenRouter API error: ${response.status} - ${errorText}`
+      );
     }
 
     const data = await response.json();
     return data.choices[0].message.content.trim();
   } catch (error) {
-    console.error('Error generating summary with OpenRouter:', error);
-    return transcript.substring(0, 300) + '...';
+    console.error("Error generating summary with OpenRouter:", error);
+    return transcript.substring(0, 300) + "...";
   }
 }
 
@@ -171,10 +188,11 @@ async function generateSummaryWithOpenRouter(
 export async function fetchAndSummarizeVideos(): Promise<void> {
   console.log(`[${new Date().toISOString()}] Starting video fetch job...`);
 
-  const channels = await prisma.youTubeChannel.findMany();
+  const channelsResult = await query("SELECT * FROM youtube_channels");
+  const channels = channelsResult.rows;
 
   if (channels.length === 0) {
-    console.log('No channels configured. Skipping.');
+    console.log("No channels configured. Skipping.");
     return;
   }
 
@@ -182,20 +200,23 @@ export async function fetchAndSummarizeVideos(): Promise<void> {
 
   for (const channel of channels) {
     try {
-      console.log(`[${new Date().toISOString()}] Processing channel: ${channel.channelName}`);
+      console.log(
+        `[${new Date().toISOString()}] Processing channel: ${channel.channel_name}`
+      );
 
       // Fetch latest videos from YouTube API (last 24 hours)
-      const videos = await fetchLatestVideos(channel.channelId, 24);
+      const videos = await fetchLatestVideos(channel.channel_id, 24);
 
       console.log(`  Found ${videos.length} videos in last 24h`);
 
       for (const video of videos) {
         // Check if video already exists in DB
-        const exists = await prisma.video.findUnique({
-          where: { videoId: video.id },
-        });
+        const existsResult = await query(
+          "SELECT id FROM videos WHERE video_id = $1",
+          [video.id]
+        );
 
-        if (exists) {
+        if (existsResult.rows.length > 0) {
           console.log(`  Skipping already processed video: ${video.title}`);
           continue;
         }
@@ -207,31 +228,38 @@ export async function fetchAndSummarizeVideos(): Promise<void> {
 
         // Fallback to description if transcript unavailable
         if (!transcript || transcript.length < 100) {
-          console.log(`  No transcript for ${video.id}, using title + description`);
+          console.log(
+            `  No transcript for ${video.id}, using title + description`
+          );
           transcript = `Title: ${video.title}\n\nDescription: ${video.description}`;
         }
 
         // Generate summary using OpenRouter
-        const summary = await generateSummaryWithOpenRouter(transcript, video.title);
+        const summary = await generateSummaryWithOpenRouter(
+          transcript,
+          video.title
+        );
 
         // Save to database
-        await prisma.video.create({
-          data: {
-            videoId: video.id,
-            title: video.title,
-            thumbnail: video.thumbnail,
+        await query(
+          `INSERT INTO videos (id, video_id, title, thumbnail, summary, video_url, published_at, fetched_at, channel_id)
+           VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW(), $7)`,
+          [
+            video.id,
+            video.title,
+            video.thumbnail,
             summary,
-            videoUrl: `https://youtube.com/watch?v=${video.id}`,
-            publishedAt: new Date(video.publishedAt),
-            channelId: channel.id,
-          },
-        });
+            `https://youtube.com/watch?v=${video.id}`,
+            new Date(video.publishedAt),
+            channel.id,
+          ]
+        );
 
         processedCount++;
         console.log(`  ✓ Saved video: ${video.title}`);
       }
     } catch (error) {
-      console.error(`Error processing channel ${channel.channelName}:`, error);
+      console.error(`Error processing channel ${channel.channel_name}:`, error);
     }
   }
 
