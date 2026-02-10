@@ -4,7 +4,7 @@ import LoginPage from './views/LoginPage.vue';
 import AdminDashboard from './views/AdminDashboard.vue';
 
 const router = createRouter({
-  history: createWebHistory('/fetch/'),
+  history: createWebHistory('/yt-summary/'),
   routes: [
     {
       path: '/',

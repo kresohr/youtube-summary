@@ -1,13 +1,12 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: yt-postgres # explicit name for DNS resolution
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
-    # Host port removed — no external access needed in production
-    # Uncomment for local debugging: ports: ["25433:5432"]
+    ports:
+      - "25433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -22,36 +21,45 @@ services:
 
   backend:
     build: ./backend
-    container_name: yt-backend
     environment:
-      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@yt-postgres:5432/${DB_NAME}
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       JWT_SECRET: ${JWT_SECRET}
       YOUTUBE_API_KEY: ${YOUTUBE_API_KEY}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       APP_URL: ${APP_URL}
       NODE_ENV: ${NODE_ENV}
       PORT: 4000
-    ports:
-      - "4001:4000"
     depends_on:
       postgres:
         condition: service_healthy
+    ports:
+      - "4001:4000"
     restart: unless-stopped
     networks:
       - app-network
-      - foodie-network
 
   frontend:
     build: ./frontend
-    container_name: yt-frontend
-    ports:
-      - "8081:80"
     restart: unless-stopped
     networks:
       - app-network
-      - foodie-network
 
-  # nginx service removed — host Nginx handles all proxying
+  nginx:
+    profiles: ["production"]
+    image: nginx:1.25-alpine
+    container_name: youtube-nginx
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ${SSL_CERT_PATH:-/etc/letsencrypt}:/etc/letsencrypt:ro
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
+    networks:
+      - app-network
 
 volumes:
   postgres_data:
@@ -59,6 +67,3 @@ volumes:
 networks:
   app-network:
     driver: bridge
-  foodie-network:
-    external: true
-    name: foodie_foodie-network
