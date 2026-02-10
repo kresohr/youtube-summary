@@ -66,6 +66,25 @@ router.post(
           const ytResponse = await fetch(
             `https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${channelId}&key=${process.env.YOUTUBE_API_KEY}`
           );
+
+          // If YouTube API returned a non-2xx status, handle that explicitly
+          if (!ytResponse.ok) {
+            const bodyText = await ytResponse.text().catch(() => null);
+            console.warn(
+              `YouTube API returned non-OK status ${ytResponse.status}:`,
+              bodyText
+            );
+            // Return a 502 Bad Gateway to indicate upstream error
+            res
+              .status(502)
+              .json({
+                error: "YouTube API error",
+                status: ytResponse.status,
+                details: bodyText,
+              });
+            return;
+          }
+
           const ytData = await ytResponse.json();
 
           if (!ytData.items || ytData.items.length === 0) {

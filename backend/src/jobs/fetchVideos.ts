@@ -1,4 +1,5 @@
 import { query } from "../lib/db.js";
+import { YoutubeTranscript } from "youtube-transcript-api";
 
 interface YouTubeVideoItem {
   id: { videoId: string };
@@ -75,49 +76,35 @@ async function fetchLatestVideos(
 }
 
 /**
- * Get transcript from TubeText (free, no API key needed).
+ * Get transcript from YouTube's official API.
  */
-async function getTranscriptFromTubeText(
+async function getTranscriptFromYouTube(
   videoId: string
 ): Promise<string | null> {
   try {
-    const response = await fetch(
-      `https://tubetext.app/api/transcript?videoId=${videoId}`,
-      {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    const videoUrl = `https://youtube.com/watch?v=${videoId}`;
+    const transcriptData = await YoutubeTranscript.fetchTranscript(videoUrl);
 
-    if (!response.ok) {
-      console.error(`TubeText API error for ${videoId}: ${response.status}`);
-      return null;
-    }
-
-    const data = await response.json();
-
-    // TubeText returns transcript in segments
-    if (data.transcript && Array.isArray(data.transcript)) {
-      const fullTranscript = data.transcript
-        .map((segment: TranscriptSegment) => segment.text)
+    if (
+      transcriptData &&
+      Array.isArray(transcriptData) &&
+      transcriptData.length > 0
+    ) {
+      const fullTranscript = transcriptData
+        .map((segment: any) => segment.text)
         .join(" ");
       return fullTranscript;
     }
 
     return null;
   } catch (error) {
-    console.error(
-      `Error fetching transcript from TubeText for ${videoId}:`,
-      error
-    );
+    // Transcript not available (disabled, private video, etc.)
     return null;
   }
 }
 
 /**
- * Generate a summary using OpenRouter API.
+ * Generate a summary using OpenRouter API with a free model.
  */
 async function generateSummaryWithOpenRouter(
   transcript: string,
@@ -148,19 +135,18 @@ async function generateSummaryWithOpenRouter(
           "X-Title": "YouTube Summary System",
         },
         body: JSON.stringify({
-          model: "anthropic/claude-3.5-sonnet",
+          model: "openrouter/free", // Free Model
           messages: [
             {
               role: "system",
               content:
-                "You are a helpful assistant that creates concise summaries of YouTube videos. Summarize the main points in 3-4 sentences.",
+                "You are a helpful assistant that creates detailed summaries of YouTube videos. Provide a comprehensive summary covering all the main points and key takeaways from the video.",
             },
             {
               role: "user",
               content: `Summarize this YouTube video:\n\nTitle: ${videoTitle}\n\nTranscript:\n${truncatedTranscript}`,
             },
           ],
-          max_tokens: 200,
           temperature: 0.7,
         }),
       }
@@ -223,15 +209,15 @@ export async function fetchAndSummarizeVideos(): Promise<void> {
 
         console.log(`  Processing video: ${video.title}`);
 
-        // Get transcript using TubeText
-        let transcript = await getTranscriptFromTubeText(video.id);
-
+        // Get transcript using YouTube's official API
+        let transcript = await getTranscriptFromYouTube(video.id);
+        console.log("Cijeli transcript:", transcript);
         // Fallback to description if transcript unavailable
         if (!transcript || transcript.length < 100) {
           console.log(
             `  No transcript for ${video.id}, using title + description`
           );
-          transcript = `Title: ${video.title}\n\nDescription: ${video.description}`;
+          transcript = `Description: ${video.description}`;
         }
 
         // Generate summary using OpenRouter
