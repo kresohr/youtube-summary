@@ -22,7 +22,7 @@ services:
 
   backend:
     build: ./backend
-    container_name: yt-backend # foodie-nginx resolves this name
+    container_name: yt-backend
     environment:
       DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@yt-postgres:5432/${DB_NAME}
       JWT_SECRET: ${JWT_SECRET}
@@ -31,25 +31,25 @@ services:
       APP_URL: ${APP_URL}
       NODE_ENV: ${NODE_ENV}
       PORT: 4000
-    # Host port removed — proxied by foodie-nginx via shared-proxy network
+    ports:
+      - "4001:4000"
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
     networks:
       - app-network
-      - shared-proxy # reachable by foodie-nginx
 
   frontend:
     build: ./frontend
-    container_name: yt-frontend # foodie-nginx resolves this name
-    # Host port removed — proxied by foodie-nginx via shared-proxy network
+    container_name: yt-frontend
+    ports:
+      - "8081:80"
     restart: unless-stopped
     networks:
       - app-network
-      - shared-proxy # reachable by foodie-nginx
 
-  # nginx service removed — foodie-nginx handles all proxying
+  # nginx service removed — host Nginx handles all proxying
 
 volumes:
   postgres_data:
@@ -57,5 +57,3 @@ volumes:
 networks:
   app-network:
     driver: bridge
-  shared-proxy: # shared with foodie project
-    external: true
