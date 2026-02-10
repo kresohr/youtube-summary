@@ -1,12 +1,13 @@
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: yt-postgres # explicit name for DNS resolution
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
-    ports:
-      - "25433:5432"
+    # Host port removed — no external access needed in production
+    # Uncomment for local debugging: ports: ["25433:5432"]
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -21,48 +22,34 @@ services:
 
   backend:
     build: ./backend
+    container_name: yt-backend # foodie-nginx resolves this name
     environment:
-      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@yt-postgres:5432/${DB_NAME}
       JWT_SECRET: ${JWT_SECRET}
       YOUTUBE_API_KEY: ${YOUTUBE_API_KEY}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
       APP_URL: ${APP_URL}
       NODE_ENV: ${NODE_ENV}
       PORT: 4000
-    ports:
-      - "4001:4000"
-
+    # Host port removed — proxied by foodie-nginx via shared-proxy network
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
     networks:
       - app-network
+      - shared-proxy # reachable by foodie-nginx
 
   frontend:
     build: ./frontend
-    ports:
-      - "8081:80"
+    container_name: yt-frontend # foodie-nginx resolves this name
+    # Host port removed — proxied by foodie-nginx via shared-proxy network
     restart: unless-stopped
     networks:
       - app-network
+      - shared-proxy # reachable by foodie-nginx
 
-  nginx:
-    profiles: ["production"]
-    image: nginx:1.25-alpine
-    container_name: youtube-nginx
-    ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ${SSL_CERT_PATH:-/etc/letsencrypt}:/etc/letsencrypt:ro
-    depends_on:
-      - backend
-      - frontend
-    restart: unless-stopped
-    networks:
-      - app-network
+  # nginx service removed — foodie-nginx handles all proxying
 
 volumes:
   postgres_data:
@@ -70,3 +57,5 @@ volumes:
 networks:
   app-network:
     driver: bridge
+  shared-proxy: # shared with foodie project
+    external: true
