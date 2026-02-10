@@ -6,8 +6,8 @@ services:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
-    # Host port removed — no external access needed in production
-    # Uncomment for local debugging: ports: ["25433:5432"]
+    ports:
+      - "25433:5432" # Exposed for local development
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
