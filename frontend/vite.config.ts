@@ -5,7 +5,7 @@ import { fileURLToPath, URL } from "node:url";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
 
-  const basePath = env.VITE_BASE_PATH || "/";
+  const basePath = env.VITE_BASE_URL || "/";
 
   return {
     plugins: [vue()],
