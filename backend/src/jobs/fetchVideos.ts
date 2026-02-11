@@ -1,5 +1,5 @@
 import { query } from "../lib/db.js";
-import { YoutubeTranscript } from "youtube-transcript-api";
+import { Supadata } from "@supadata/js";
 
 interface YouTubeVideoItem {
   id: { videoId: string };
@@ -19,12 +19,6 @@ interface ParsedVideo {
   description: string;
   thumbnail: string;
   publishedAt: string;
-}
-
-interface TranscriptSegment {
-  text: string;
-  offset?: number;
-  duration?: number;
 }
 
 /**
@@ -76,24 +70,45 @@ async function fetchLatestVideos(
 }
 
 /**
- * Get transcript from YouTube's official API.
+ * Get transcript from YouTube via Supadata API.
  */
 async function getTranscriptFromYouTube(
   videoId: string
 ): Promise<string | null> {
   try {
+    const apiKey = process.env.SUPADATA_API_KEY;
+    if (!apiKey) {
+      console.error("SUPADATA_API_KEY is not set");
+      return null;
+    }
+
+    const supadata = new Supadata({ apiKey });
+
     const videoUrl = `https://youtube.com/watch?v=${videoId}`;
-    const transcriptData = await YoutubeTranscript.fetchTranscript(videoUrl);
+    const transcriptData = await supadata.transcript({
+      url: videoUrl,
+    });
+
+    // Check if response is a JobId (for large videos) or a Transcript
+    if (!transcriptData || "jobId" in transcriptData) {
+      return null;
+    }
+
+    if (!transcriptData.content) {
+      return null;
+    }
+
+    if (typeof transcriptData.content === "string") {
+      return transcriptData.content;
+    }
 
     if (
-      transcriptData &&
-      Array.isArray(transcriptData) &&
-      transcriptData.length > 0
+      Array.isArray(transcriptData.content) &&
+      transcriptData.content.length > 0
     ) {
-      const fullTranscript = transcriptData
+      return transcriptData.content
         .map((segment: any) => segment.text)
         .join(" ");
-      return fullTranscript;
     }
 
     return null;
