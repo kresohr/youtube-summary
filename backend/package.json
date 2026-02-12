@@ -18,7 +18,8 @@
     "jsonwebtoken": "^9.0.2",
     "node-cron": "^3.0.3",
     "pg": "^8.18.0",
-    "youtube-transcript-api": "^3.0.6"
+    "youtube-transcript-api": "^3.0.6",
+    "youtube-transcript-plus": "^1.1.2"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.2",

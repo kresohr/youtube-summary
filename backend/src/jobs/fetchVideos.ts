@@ -1,5 +1,6 @@
 import { query } from "../lib/db.js";
-import { Supadata } from "@supadata/js";
+// import { Supadata } from "@supadata/js";
+import { transcribeVideo } from "./youtubeTranscript.js";
 
 interface YouTubeVideoItem {
   id: { videoId: string };
@@ -26,10 +27,10 @@ interface ParsedVideo {
  */
 async function fetchLatestVideos(
   channelId: string,
-  hoursAgo: number
+  hoursAgo: number,
 ): Promise<ParsedVideo[]> {
   const publishedAfter = new Date(
-    Date.now() - hoursAgo * 60 * 60 * 1000
+    Date.now() - hoursAgo * 60 * 60 * 1000,
   ).toISOString();
 
   const apiKey = process.env.YOUTUBE_API_KEY;
@@ -49,7 +50,7 @@ async function fetchLatestVideos(
   if (!response.ok) {
     const errorText = await response.text();
     console.error(
-      `YouTube API error for channel ${channelId}: ${response.status} - ${errorText}`
+      `YouTube API error for channel ${channelId}: ${response.status} - ${errorText}`,
     );
     return [];
   }
@@ -69,51 +70,72 @@ async function fetchLatestVideos(
   }));
 }
 
+// /**
+//  * Get transcript from YouTube via Supadata API.
+//  */
+// async function getTranscriptFromYouTube(
+//   videoId: string
+// ): Promise<string | null> {
+//   try {
+//     const apiKey = process.env.SUPADATA_API_KEY;
+//     if (!apiKey) {
+//       console.error("SUPADATA_API_KEY is not set");
+//       return null;
+//     }
+//
+//     const supadata = new Supadata({ apiKey });
+//
+//     const videoUrl = `https://youtube.com/watch?v=${videoId}`;
+//     const transcriptData = await supadata.transcript({
+//       url: videoUrl,
+//     });
+//
+//     // Check if response is a JobId (for large videos) or a Transcript
+//     if (!transcriptData || "jobId" in transcriptData) {
+//       return null;
+//     }
+//
+//     if (!transcriptData.content) {
+//       return null;
+//     }
+//
+//     if (typeof transcriptData.content === "string") {
+//       return transcriptData.content;
+//     }
+//
+//     if (
+//       Array.isArray(transcriptData.content) &&
+//       transcriptData.content.length > 0
+//     ) {
+//       return transcriptData.content
+//         .map((segment: any) => segment.text)
+//         .join(" ");
+//     }
+//
+//     return null;
+//   } catch (error) {
+//     // Transcript not available (disabled, private video, etc.)
+//     return null;
+//   }
+// }
+
 /**
- * Get transcript from YouTube via Supadata API.
+ * Get transcript from YouTube via youtube-transcript-plus.
  */
 async function getTranscriptFromYouTube(
-  videoId: string
+  videoId: string,
 ): Promise<string | null> {
   try {
-    const apiKey = process.env.SUPADATA_API_KEY;
-    if (!apiKey) {
-      console.error("SUPADATA_API_KEY is not set");
-      return null;
-    }
-
-    const supadata = new Supadata({ apiKey });
-
     const videoUrl = `https://youtube.com/watch?v=${videoId}`;
-    const transcriptData = await supadata.transcript({
-      url: videoUrl,
-    });
+    const transcriptSegments = await transcribeVideo(videoUrl);
 
-    // Check if response is a JobId (for large videos) or a Transcript
-    if (!transcriptData || "jobId" in transcriptData) {
+    if (!transcriptSegments || transcriptSegments.length === 0) {
       return null;
     }
 
-    if (!transcriptData.content) {
-      return null;
-    }
-
-    if (typeof transcriptData.content === "string") {
-      return transcriptData.content;
-    }
-
-    if (
-      Array.isArray(transcriptData.content) &&
-      transcriptData.content.length > 0
-    ) {
-      return transcriptData.content
-        .map((segment: any) => segment.text)
-        .join(" ");
-    }
-
-    return null;
+    return transcriptSegments.map((segment: any) => segment.text).join(" ");
   } catch (error) {
-    // Transcript not available (disabled, private video, etc.)
+    console.error(`Error fetching transcript for ${videoId}:`, error);
     return null;
   }
 }
@@ -123,7 +145,7 @@ async function getTranscriptFromYouTube(
  */
 async function generateSummaryWithOpenRouter(
   transcript: string,
-  videoTitle: string
+  videoTitle: string,
 ): Promise<string> {
   try {
     const apiKey = process.env.OPENROUTER_API_KEY;
@@ -164,13 +186,13 @@ async function generateSummaryWithOpenRouter(
           ],
           temperature: 0.7,
         }),
-      }
+      },
     );
 
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(
-        `OpenRouter API error: ${response.status} - ${errorText}`
+        `OpenRouter API error: ${response.status} - ${errorText}`,
       );
     }
 
@@ -202,7 +224,7 @@ export async function fetchAndSummarizeVideos(): Promise<void> {
   for (const channel of channels) {
     try {
       console.log(
-        `[${new Date().toISOString()}] Processing channel: ${channel.channel_name}`
+        `[${new Date().toISOString()}] Processing channel: ${channel.channel_name}`,
       );
 
       // Fetch latest videos from YouTube API (last 24 hours)
@@ -214,7 +236,7 @@ export async function fetchAndSummarizeVideos(): Promise<void> {
         // Check if video already exists in DB
         const existsResult = await query(
           "SELECT id FROM videos WHERE video_id = $1",
-          [video.id]
+          [video.id],
         );
 
         if (existsResult.rows.length > 0) {
@@ -230,7 +252,7 @@ export async function fetchAndSummarizeVideos(): Promise<void> {
         // Fallback to description if transcript unavailable
         if (!transcript || transcript.length < 100) {
           console.log(
-            `  No transcript for ${video.id}, using title + description`
+            `  No transcript for ${video.id}, using title + description`,
           );
           transcript = `Description: ${video.description}`;
         }
@@ -238,7 +260,7 @@ export async function fetchAndSummarizeVideos(): Promise<void> {
         // Generate summary using OpenRouter
         const summary = await generateSummaryWithOpenRouter(
           transcript,
-          video.title
+          video.title,
         );
 
         // Save to database
@@ -253,7 +275,7 @@ export async function fetchAndSummarizeVideos(): Promise<void> {
             `https://youtube.com/watch?v=${video.id}`,
             new Date(video.publishedAt),
             channel.id,
-          ]
+          ],
         );
 
         processedCount++;
@@ -265,6 +287,6 @@ export async function fetchAndSummarizeVideos(): Promise<void> {
   }
 
   console.log(
-    `[${new Date().toISOString()}] Job complete. Processed ${processedCount} new videos.`
+    `[${new Date().toISOString()}] Job complete. Processed ${processedCount} new videos.`,
   );
 }
