@@ -258,6 +258,15 @@ Each run:
 
 You can also trigger a fetch manually from the Admin Dashboard.
 
+## Frontend Routes
+
+| Path                   | Auth | Description                                      |
+| ---------------------- | ---- | ------------------------------------------------ |
+| `/`                    | No   | Redirects to `/summary`                          |
+| `/summary`             | No   | Public feed of all video summaries               |
+| `/configure`           | No   | Admin login page                                 |
+| `/configure/dashboard` | JWT  | Admin dashboard (manage channels, trigger fetch) |
+
 ## API Endpoints
 
 | Method | Path                       | Auth | Description                  |
