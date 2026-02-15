@@ -2,6 +2,8 @@
 
 Automated system that fetches the latest videos from configured YouTube channels, extracts transcripts, generates AI-powered summaries via OpenRouter, and displays them on a responsive web interface. Runs as a daily cron job inside Docker.
 
+_Warning: This project was 'vibecoded' with guided assistance and personal architecture choosing from my side. Make sure you double-check all security related stuff if you plan to use it for production._
+
 ## Tech Stack
 
 | Layer                | Technology                                        |
