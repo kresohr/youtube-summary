@@ -10,7 +10,6 @@
     "seed": "tsx src/seed.ts"
   },
   "dependencies": {
-    "@supadata/js": "^1.3.2",
     "bcrypt": "^5.1.1",
     "cors": "^2.8.5",
     "dotenv": "^17.2.4",
@@ -18,7 +17,6 @@
     "jsonwebtoken": "^9.0.2",
     "node-cron": "^3.0.3",
     "pg": "^8.18.0",
-    "youtube-transcript-api": "^3.0.6",
     "youtube-transcript-plus": "^1.1.2"
   },
   "devDependencies": {

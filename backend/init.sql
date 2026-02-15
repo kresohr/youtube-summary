@@ -1,5 +1,5 @@
 -- Database initialization script
--- Replaces Prisma migrations
+-- Tables are created automatically when the PostgreSQL container starts
 
 CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
