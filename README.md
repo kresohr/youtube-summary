@@ -83,21 +83,21 @@ Copy `.env.example` to `.env` and fill in the values:
 cp .env.example .env
 ```
 
-| Variable             | Description                                                     | Required |
-| -------------------- | --------------------------------------------------------------- | -------- |
-| `DB_USER`            | PostgreSQL username                                             | ✅       |
-| `DB_PASSWORD`        | PostgreSQL password                                             | ✅       |
-| `DB_NAME`            | PostgreSQL database name                                        | ✅       |
-| `JWT_SECRET`         | Secret for JWT tokens — generate with `openssl rand -base64 32` | ✅       |
-| `YOUTUBE_API_KEY`    | YouTube Data API v3 key                                         | ✅       |
-| `OPENROUTER_API_KEY` | OpenRouter API key for AI summaries                             | ✅       |
-| `APP_URL`            | Public URL of the app (e.g. `https://yourdomain.com`)           | ✅       |
+| Variable             | Description                                                      | Required |
+| -------------------- | ---------------------------------------------------------------- | -------- |
+| `DB_USER`            | PostgreSQL username                                              | ✅       |
+| `DB_PASSWORD`        | PostgreSQL password                                              | ✅       |
+| `DB_NAME`            | PostgreSQL database name                                         | ✅       |
+| `JWT_SECRET`         | Secret for JWT tokens — generate with `openssl rand -base64 32`  | ✅       |
+| `YOUTUBE_API_KEY`    | YouTube Data API v3 key                                          | ✅       |
+| `OPENROUTER_API_KEY` | OpenRouter API key for AI summaries                              | ✅       |
+| `APP_URL`            | Public URL of the app (e.g. `https://yourdomain.com`)            | ✅       |
 | `CORS_ORIGIN`        | Allowed frontend origin for CORS (e.g. `https://yourdomain.com`) | ✅       |
-| `NODE_ENV`           | `production` or `development`                                   | ✅       |
-| `PORT`               | Backend port inside the container (default `4000`)              | ❌       |
-| `HTTP_PORT`          | Host HTTP port for Nginx (default `80`, production only)        | ❌       |
-| `HTTPS_PORT`         | Host HTTPS port for Nginx (default `443`, production only)      | ❌       |
-| `SSL_CERT_PATH`      | Path to Let's Encrypt certs (default `/etc/letsencrypt`)        | ❌       |
+| `NODE_ENV`           | `production` or `development`                                    | ✅       |
+| `PORT`               | Backend port inside the container (default `4000`)               | ❌       |
+| `HTTP_PORT`          | Host HTTP port for Nginx (default `80`, production only)         | ❌       |
+| `HTTPS_PORT`         | Host HTTPS port for Nginx (default `443`, production only)       | ❌       |
+| `SSL_CERT_PATH`      | Path to Let's Encrypt certs (default `/etc/letsencrypt`)         | ❌       |
 
 ## Quick Start — Local Development
 
