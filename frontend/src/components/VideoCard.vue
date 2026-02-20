@@ -22,7 +22,7 @@
       </h3>
 
       <div class="card-summary">
-        <p>{{ video.summary }}</p>
+        <p>{{ summaryPreview }}</p>
       </div>
 
       <button
@@ -68,7 +68,7 @@
               </button>
             </div>
             <div class="dialog-body">
-              <p>{{ video.summary }}</p>
+              <MarkdownRenderer :source="video.summary" />
             </div>
             <div class="dialog-footer">
               <a
@@ -93,6 +93,7 @@
 <script setup lang="ts">
   import { ref, computed } from "vue";
   import { formatDistanceToNow } from "date-fns";
+  import MarkdownRenderer from "./MarkdownRenderer.vue";
 
   interface Video {
     id: string;
@@ -120,6 +121,25 @@
 
   const isLongSummary = computed(() => {
     return props.video.summary.length > 200;
+  });
+
+  /** Strip markdown syntax for the plain-text card preview */
+  function stripMarkdown(text: string): string {
+    return text
+      .replace(/^#{1,6}\s+/gm, "") // headings
+      .replace(/[*_~`]/g, "") // bold, italic, code, strikethrough
+      .replace(/^\s*[-*+]\s+/gm, "") // unordered list bullets
+      .replace(/^\s*\d+\.\s+/gm, "") // ordered list numbers
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // links → label only
+      .replace(/\n{2,}/g, " ") // collapse blank lines
+      .replace(/\n/g, " ") // collapse newlines
+      .trim();
+  }
+
+  /** Plain-text snippet shown on the card (max ~200 chars) */
+  const summaryPreview = computed(() => {
+    const plain = stripMarkdown(props.video.summary);
+    return plain.length > 200 ? plain.substring(0, 200) + "…" : plain;
   });
 </script>
 
@@ -278,14 +298,6 @@
     padding: 1.5rem;
     overflow-y: auto;
     flex: 1;
-    line-height: 1.6;
-    color: var(--color-text-secondary);
-  }
-
-  .dialog-body p {
-    margin: 0;
-    white-space: pre-wrap;
-    word-wrap: break-word;
   }
 
   .dialog-footer {
