@@ -277,9 +277,21 @@ You can also trigger a fetch manually from the Admin Dashboard.
 | GET    | `/api/videos`              | No   | List videos (paginated)      |
 | GET    | `/api/videos/:id`          | No   | Get single video             |
 | GET    | `/api/channels`            | JWT  | List configured channels     |
-| POST   | `/api/channels`            | JWT  | Add a YouTube channel        |
+| POST   | `/api/channels`            | JWT  | Add a channel by YouTube URL |
 | DELETE | `/api/channels/:id`        | JWT  | Delete a channel             |
 | POST   | `/api/admin/trigger-fetch` | JWT  | Manually trigger video fetch |
+
+### Adding a Channel
+
+The `POST /api/channels` body accepts a `channelUrl` (required) and an optional `channelName` (auto-detected from the YouTube API when omitted). Supported URL formats:
+
+| Input       | Example                                                |
+| ----------- | ------------------------------------------------------ |
+| Handle URL  | `https://youtube.com/@mkbhd`                           |
+| Channel URL | `https://youtube.com/channel/UCBcRF18a7Qf58cCRy5xuWwQ` |
+| Custom URL  | `https://youtube.com/c/mkbhd`                          |
+| User URL    | `https://youtube.com/user/mkbhd`                       |
+| Bare handle | `@mkbhd`                                               |
 
 ## Database Schema
 
