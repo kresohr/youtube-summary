@@ -3,12 +3,22 @@ import { query } from "../lib/db.js";
 
 const router = Router();
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_LIMIT = 100;
+
 // GET /api/videos - Fetch all summarized videos (public)
 router.get("/", async (req: Request, res: Response): Promise<void> => {
   try {
-    const limit = parseInt(req.query.limit as string) || 50;
-    const offset = parseInt(req.query.offset as string) || 0;
+    const rawLimit = parseInt(req.query.limit as string) || 50;
+    const limit = Math.min(Math.max(rawLimit, 1), MAX_LIMIT);
+    const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
     const channelId = req.query.channelId as string | undefined;
+
+    // Validate channelId format if provided
+    if (channelId && !UUID_REGEX.test(channelId)) {
+      res.status(400).json({ error: "Invalid channelId format" });
+      return;
+    }
 
     let videosQuery: string;
     let countQuery: string;
@@ -64,7 +74,7 @@ router.get("/", async (req: Request, res: Response): Promise<void> => {
       hasMore: offset + limit < total,
     });
   } catch (error) {
-    console.error("Error fetching videos:", error);
+    console.error("Error fetching videos:", error instanceof Error ? error.message : "Unknown error");
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -73,6 +83,11 @@ router.get("/", async (req: Request, res: Response): Promise<void> => {
 router.get("/:id", async (req: Request, res: Response): Promise<void> => {
   try {
     const id = req.params.id as string;
+
+    if (!UUID_REGEX.test(id)) {
+      res.status(400).json({ error: "Invalid video ID format" });
+      return;
+    }
 
     const result = await query(
       `SELECT v.*, c.channel_name, c.channel_url
@@ -106,7 +121,7 @@ router.get("/:id", async (req: Request, res: Response): Promise<void> => {
 
     res.json(video);
   } catch (error) {
-    console.error("Error fetching video:", error);
+    console.error("Error fetching video:", error instanceof Error ? error.message : "Unknown error");
     res.status(500).json({ error: "Internal server error" });
   }
 });

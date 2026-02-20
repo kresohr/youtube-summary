@@ -3,6 +3,7 @@ import { authMiddleware } from "../middleware/auth.js";
 import { query } from "../lib/db.js";
 
 const router = Router();
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // GET /api/channels - Fetch all channels (protected)
 router.get(
@@ -28,7 +29,7 @@ router.get(
 
       res.json(channels);
     } catch (error) {
-      console.error("Error fetching channels:", error);
+      console.error("Error fetching channels:", error instanceof Error ? error.message : "Unknown error");
       res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -49,6 +50,17 @@ router.post(
         return;
       }
 
+      if (typeof channelId !== "string" || typeof channelName !== "string") {
+        res.status(400).json({ error: "Invalid input types" });
+        return;
+      }
+
+      // Validate input lengths
+      if (channelId.length > 255 || channelName.length > 255) {
+        res.status(400).json({ error: "Input exceeds maximum length" });
+        return;
+      }
+
       // Check if channel already exists
       const existing = await query(
         "SELECT id FROM youtube_channels WHERE channel_id = $1",
@@ -63,25 +75,21 @@ router.post(
       // Optionally validate channel exists via YouTube API
       if (process.env.YOUTUBE_API_KEY) {
         try {
-          const ytResponse = await fetch(
-            `https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${channelId}&key=${process.env.YOUTUBE_API_KEY}`
-          );
+          const url = new URL("https://www.googleapis.com/youtube/v3/channels");
+          url.searchParams.set("part", "snippet");
+          url.searchParams.set("id", channelId);
+          url.searchParams.set("key", process.env.YOUTUBE_API_KEY);
+
+          const ytResponse = await fetch(url.toString());
 
           // If YouTube API returned a non-2xx status, handle that explicitly
           if (!ytResponse.ok) {
-            const bodyText = await ytResponse.text().catch(() => null);
             console.warn(
-              `YouTube API returned non-OK status ${ytResponse.status}:`,
-              bodyText
+              `YouTube API returned non-OK status ${ytResponse.status}`
             );
-            // Return a 502 Bad Gateway to indicate upstream error
             res
               .status(502)
-              .json({
-                error: "YouTube API error",
-                status: ytResponse.status,
-                details: bodyText,
-              });
+              .json({ error: "YouTube API validation failed" });
             return;
           }
 
@@ -119,7 +127,7 @@ router.post(
         addedAt: row.added_at,
       });
     } catch (error) {
-      console.error("Error adding channel:", error);
+      console.error("Error adding channel:", error instanceof Error ? error.message : "Unknown error");
       res.status(500).json({ error: "Internal server error" });
     }
   }
@@ -132,6 +140,11 @@ router.delete(
   async (req: Request, res: Response): Promise<void> => {
     try {
       const id = req.params.id as string;
+
+      if (!UUID_REGEX.test(id)) {
+        res.status(400).json({ error: "Invalid channel ID format" });
+        return;
+      }
 
       const existing = await query(
         "SELECT id FROM youtube_channels WHERE id = $1",
@@ -147,7 +160,7 @@ router.delete(
 
       res.json({ message: "Channel deleted successfully" });
     } catch (error) {
-      console.error("Error deleting channel:", error);
+      console.error("Error deleting channel:", error instanceof Error ? error.message : "Unknown error");
       res.status(500).json({ error: "Internal server error" });
     }
   }
