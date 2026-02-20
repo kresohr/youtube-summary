@@ -38,13 +38,16 @@ async function fetchLatestVideos(
     return [];
   }
 
-  const url =
-    `https://www.googleapis.com/youtube/v3/search?` +
-    `part=snippet&channelId=${channelId}&type=video&order=date&` +
-    `publishedAfter=${publishedAfter}&maxResults=10&` +
-    `key=${apiKey}`;
+  const url = new URL("https://www.googleapis.com/youtube/v3/search");
+  url.searchParams.set("part", "snippet");
+  url.searchParams.set("channelId", channelId);
+  url.searchParams.set("type", "video");
+  url.searchParams.set("order", "date");
+  url.searchParams.set("publishedAfter", publishedAfter);
+  url.searchParams.set("maxResults", "10");
+  url.searchParams.set("key", apiKey);
 
-  const response = await fetch(url);
+  const response = await fetch(url.toString());
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -83,7 +86,7 @@ async function getTranscriptFromYouTube(
       return null;
     }
 
-    return transcriptSegments.map((segment: any) => segment.text).join(" ");
+    return transcriptSegments.map((segment: { text: string }) => segment.text).join(" ");
   } catch (error) {
     console.error(`Error fetching transcript for ${videoId}:`, error);
     return null;
@@ -126,12 +129,37 @@ async function generateSummaryWithOpenRouter(
           messages: [
             {
               role: "system",
-              content:
-                "You are a helpful assistant that creates detailed summaries of YouTube videos. Provide a comprehensive summary covering all the main points and key takeaways from the video.",
+              content: `You are a helpful assistant that creates structured summaries of YouTube videos.
+You MUST always respond in valid Markdown using EXACTLY the following structure — no deviations, no extra sections, no plain text:
+
+## 📝 Overview
+A 2–4 sentence high-level description of what the video is about.
+
+## 🔑 Key Points
+- Bullet point 1
+- Bullet point 2
+- Bullet point 3
+(Add as many bullet points as needed to cover all important points.)
+
+## 💡 Key Takeaways
+- The most important insight or lesson from the video.
+- Additional takeaway if applicable.
+
+## 🏷️ Topics Covered
+- Topic 1
+- Topic 2
+- Topic 3
+
+Rules:
+- Always use the exact headings above (including emojis).
+- Use Markdown bullet lists (- ) under every section.
+- Do NOT add any text outside of these four sections.
+- Do NOT wrap your response in a code block.
+- The response must be valid Markdown that renders correctly.`,
             },
             {
               role: "user",
-              content: `Summarize this YouTube video:\n\nTitle: ${videoTitle}\n\nTranscript:\n${truncatedTranscript}`,
+              content: `Summarize this YouTube video using the exact Markdown structure specified.\n\nTitle: ${videoTitle}\n\nTranscript:\n${truncatedTranscript}`,
             },
           ],
           temperature: 0.7,
@@ -198,7 +226,7 @@ export async function fetchAndSummarizeVideos(): Promise<void> {
 
         // Get transcript using YouTube's official API
         let transcript = await getTranscriptFromYouTube(video.id);
-        console.log("Cijeli transcript:", transcript);
+
         // Fallback to description if transcript unavailable
         if (!transcript || transcript.length < 100) {
           console.log(
@@ -232,7 +260,7 @@ export async function fetchAndSummarizeVideos(): Promise<void> {
         console.log(`  ✓ Saved video: ${video.title}`);
       }
     } catch (error) {
-      console.error(`Error processing channel ${channel.channel_name}:`, error);
+      console.error(`Error processing channel ${channel.channel_name}:`, error instanceof Error ? error.message : "Unknown error");
     }
   }
 
