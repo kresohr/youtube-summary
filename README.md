@@ -92,6 +92,7 @@ cp .env.example .env
 | `YOUTUBE_API_KEY`    | YouTube Data API v3 key                                         | ✅       |
 | `OPENROUTER_API_KEY` | OpenRouter API key for AI summaries                             | ✅       |
 | `APP_URL`            | Public URL of the app (e.g. `https://yourdomain.com`)           | ✅       |
+| `CORS_ORIGIN`        | Allowed frontend origin for CORS (e.g. `https://yourdomain.com`) | ✅       |
 | `NODE_ENV`           | `production` or `development`                                   | ✅       |
 | `PORT`               | Backend port inside the container (default `4000`)              | ❌       |
 | `HTTP_PORT`          | Host HTTP port for Nginx (default `80`, production only)        | ❌       |
