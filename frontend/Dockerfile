@@ -3,7 +3,7 @@ FROM node:22-alpine AS build
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY . .
 RUN npm run build
@@ -12,12 +12,16 @@ RUN npm run build
 FROM nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Custom nginx config for SPA routing
+# Custom nginx config for SPA routing with security headers
 RUN echo 'server { \
     listen 80; \
     listen 8080; \
     root /usr/share/nginx/html; \
     index index.html; \
+    server_tokens off; \
+    add_header X-Content-Type-Options "nosniff" always; \
+    add_header X-Frame-Options "DENY" always; \
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always; \
     location / { \
         try_files $uri $uri/ /index.html; \
     } \
