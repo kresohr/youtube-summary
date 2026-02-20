@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
 import cron from "node-cron";
 
 import { noIndexMiddleware } from "./middleware/noIndex.js";
@@ -10,12 +11,25 @@ import videoRoutes from "./routes/videos.js";
 import adminRoutes from "./routes/admin.js";
 import { fetchAndSummarizeVideos } from "./jobs/fetchVideos.js";
 
+// Fail fast if critical env vars are missing
+if (!process.env.JWT_SECRET) {
+  throw new Error("JWT_SECRET environment variable is not set");
+}
+
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// Security middleware
+app.use(helmet());
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || "http://localhost:8080",
+  methods: ["GET", "POST", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
+app.use(express.json({ limit: "1mb" }));
+
+// Disable x-powered-by (defense in depth, helmet also handles this)
+app.disable("x-powered-by");
 
 // Apply noindex header to all API routes
 app.use("/api", noIndexMiddleware);

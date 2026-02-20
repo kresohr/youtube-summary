@@ -5,6 +5,14 @@ export interface AuthRequest extends Request {
   user?: { userId: string; username: string };
 }
 
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error('JWT_SECRET environment variable is not set');
+  }
+  return secret;
+}
+
 export function authMiddleware(req: AuthRequest, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
 
@@ -16,7 +24,9 @@ export function authMiddleware(req: AuthRequest, res: Response, next: NextFuncti
   const token = authHeader.split(' ')[1];
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET!) as {
+    const decoded = jwt.verify(token, getJwtSecret(), {
+      algorithms: ['HS256'],
+    }) as {
       userId: string;
       username: string;
     };
