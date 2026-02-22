@@ -16,6 +16,12 @@
             {{ ch.channelName }}
           </option>
         </select>
+        <select v-model="selectedCategory" @change="fetchVideos">
+          <option value="">All Categories</option>
+          <option v-for="category in categories" :key="category" :value="category">
+            {{ category }}
+          </option>
+        </select>
       </div>
 
       <!-- Loading State -->
@@ -64,6 +70,8 @@
     summary: string;
     videoUrl: string;
     publishedAt: string;
+    category: string;
+    channelId: string;
     channel: {
       channelName: string;
       channelUrl: string;
@@ -72,9 +80,11 @@
 
   const videos = ref<Video[]>([]);
   const channels = ref<Channel[]>([]);
+  const categories = ref<string[]>([]);
   const loading = ref(true);
   const hasMore = ref(false);
   const selectedChannel = ref("");
+  const selectedCategory = ref("");
   const offset = ref(0);
   const limit = 12;
 
@@ -84,6 +94,7 @@
     try {
       const params: Record<string, string | number> = { limit, offset: 0 };
       if (selectedChannel.value) params.channelId = selectedChannel.value;
+      if (selectedCategory.value) params.category = selectedCategory.value;
 
       const { data } = await api.get("/videos", { params });
       videos.value = data.videos;
@@ -103,6 +114,7 @@
         offset: offset.value,
       };
       if (selectedChannel.value) params.channelId = selectedChannel.value;
+      if (selectedCategory.value) params.category = selectedCategory.value;
 
       const { data } = await api.get("/videos", { params });
       videos.value.push(...data.videos);
@@ -118,6 +130,7 @@
       // Channels list is public for the filter dropdown
       const { data } = await api.get("/videos", { params: { limit: 1000 } });
       const uniqueChannels = new Map<string, Channel>();
+      const uniqueCategories = new Set<string>();
       for (const v of data.videos) {
         if (!uniqueChannels.has(v.channelId)) {
           uniqueChannels.set(v.channelId, {
@@ -125,8 +138,15 @@
             channelName: v.channel.channelName,
           });
         }
+
+        if (typeof v.category === "string" && v.category.trim()) {
+          uniqueCategories.add(v.category.trim().toLowerCase());
+        }
       }
       channels.value = Array.from(uniqueChannels.values());
+      categories.value = Array.from(uniqueCategories).sort((first, second) =>
+        first.localeCompare(second)
+      );
     } catch {
       // Channels filter is optional, don't fail
     }
@@ -161,12 +181,15 @@
   }
 
   .filters {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
     margin-bottom: 1.5rem;
-    max-width: 250px;
   }
 
   .filters select {
     background: white;
+    min-width: 220px;
   }
 
   .video-grid {
