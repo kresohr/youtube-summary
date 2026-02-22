@@ -13,8 +13,12 @@ CREATE TABLE IF NOT EXISTS youtube_channels (
   channel_id VARCHAR(255) UNIQUE NOT NULL,
   channel_name VARCHAR(255) NOT NULL,
   channel_url VARCHAR(512) NOT NULL,
+  category VARCHAR(50) NOT NULL DEFAULT 'main',
   added_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- Migrate existing channels: add category column if it doesn't exist yet
+ALTER TABLE youtube_channels ADD COLUMN IF NOT EXISTS category VARCHAR(50) NOT NULL DEFAULT 'main';
 
 CREATE TABLE IF NOT EXISTS videos (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

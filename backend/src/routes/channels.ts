@@ -133,6 +133,7 @@ router.get(
         channelId: row.channel_id,
         channelName: row.channel_name,
         channelUrl: row.channel_url,
+        category: row.category,
         addedAt: row.added_at,
         _count: { videos: parseInt(row.video_count, 10) },
       }));
@@ -154,7 +155,7 @@ router.post(
   authMiddleware,
   async (req: Request, res: Response): Promise<void> => {
     try {
-      const { channelUrl, channelName } = req.body;
+      const { channelUrl, channelName, category } = req.body;
 
       if (!channelUrl) {
         res.status(400).json({ error: "channelUrl is required" });
@@ -163,6 +164,23 @@ router.post(
 
       if (typeof channelUrl !== "string") {
         res.status(400).json({ error: "Invalid input types" });
+        return;
+      }
+
+      if (typeof category !== "string") {
+        res.status(400).json({ error: "Invalid category type" });
+        return;
+      }
+
+      const normalizedCategory = category.trim().toLowerCase();
+
+      if (!normalizedCategory) {
+        res.status(400).json({ error: "category is required" });
+        return;
+      }
+
+      if (normalizedCategory.length > 50) {
+        res.status(400).json({ error: "category exceeds maximum length" });
         return;
       }
 
@@ -239,10 +257,10 @@ router.post(
       }
 
       const result = await query(
-        `INSERT INTO youtube_channels (id, channel_id, channel_name, channel_url, added_at)
-       VALUES (gen_random_uuid(), $1, $2, $3, NOW())
+        `INSERT INTO youtube_channels (id, channel_id, channel_name, channel_url, category, added_at)
+       VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW())
        RETURNING *`,
-        [resolved.channelId, finalChannelName, resolved.channelUrl]
+        [resolved.channelId, finalChannelName, resolved.channelUrl, normalizedCategory]
       );
 
       const row = result.rows[0];
@@ -251,6 +269,7 @@ router.post(
         channelId: row.channel_id,
         channelName: row.channel_name,
         channelUrl: row.channel_url,
+        category: row.category,
         addedAt: row.added_at,
       });
     } catch (error) {

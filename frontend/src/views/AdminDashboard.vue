@@ -36,6 +36,23 @@
                 placeholder="e.g. Tech Channel"
               />
             </div>
+            <div class="form-group">
+              <label for="channelCategory">Category</label>
+              <input
+                id="channelCategory"
+                v-model="newChannel.category"
+                list="available-categories"
+                placeholder="Select or type category"
+                required
+              />
+              <datalist id="available-categories">
+                <option
+                  v-for="category in availableCategories"
+                  :key="`add-${category}`"
+                  :value="category"
+                />
+              </datalist>
+            </div>
           </div>
           <button type="submit" class="btn-primary" :disabled="addingChannel">
             {{ addingChannel ? "Adding..." : "Add Channel" }}
@@ -47,13 +64,46 @@
       <section class="admin-section">
         <div class="section-header">
           <h2>Configured Channels</h2>
-          <button
-            class="btn-primary"
-            @click="triggerFetch"
-            :disabled="triggering"
-          >
-            {{ triggering ? "Triggering..." : "🔄 Trigger Fetch Now" }}
-          </button>
+          <div class="fetch-actions">
+            <button
+              class="btn-primary"
+              @click="triggerFetch"
+              :disabled="triggering"
+            >
+              {{ triggering ? "Triggering..." : "🔄 Fetch Main" }}
+            </button>
+            <div class="fetch-category-group">
+              <input
+                v-model="selectedFetchCategory"
+                list="fetch-categories"
+                placeholder="Select or type category"
+              />
+              <datalist id="fetch-categories">
+                <option
+                  v-for="category in availableCategories"
+                  :key="`fetch-${category}`"
+                  :value="category"
+                />
+              </datalist>
+              <button
+                class="btn-secondary"
+                @click="triggerFetchByCategory"
+                :disabled="triggeringCategory || !selectedFetchCategory"
+              >
+                {{ triggeringCategory ? "Triggering..." : "🎬 Fetch Category" }}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-filters" v-if="channels.length > 0">
+          <label for="dashboardCategoryFilter">Filter by category</label>
+          <select id="dashboardCategoryFilter" v-model="dashboardCategoryFilter">
+            <option value="">All categories</option>
+            <option v-for="category in availableCategories" :key="`filter-${category}`" :value="category">
+              {{ category }}
+            </option>
+          </select>
         </div>
 
         <div v-if="loadingChannels" class="loading">
@@ -69,13 +119,17 @@
           <thead>
             <tr>
               <th>Channel Name</th>
+              <th>Category</th>
               <th>Videos</th>
               <th>Added</th>
               <th>Actions</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="channel in channels" :key="channel.id">
+            <tr v-if="filteredChannels.length === 0">
+              <td colspan="5">No channels match the selected category.</td>
+            </tr>
+            <tr v-for="channel in filteredChannels" :key="channel.id">
               <td>
                 <a
                   :href="channel.channelUrl"
@@ -84,6 +138,11 @@
                 >
                   {{ channel.channelName }}
                 </a>
+              </td>
+              <td>
+                <span class="category-badge" :class="`category-${channel.category ?? 'main'}`">
+                  {{ channel.category ?? 'main' }}
+                </span>
               </td>
               <td>{{ channel._count?.videos ?? 0 }}</td>
               <td>{{ formatDate(channel.addedAt) }}</td>
@@ -109,7 +168,7 @@
 </template>
 
 <script setup lang="ts">
-  import { ref, reactive, onMounted } from "vue";
+  import { ref, reactive, computed, onMounted } from "vue";
   import { useRouter } from "vue-router";
   import api from "../api";
 
@@ -118,6 +177,7 @@
     channelId: string;
     channelName: string;
     channelUrl: string;
+    category: string;
     addedAt: string;
     _count?: { videos: number };
   }
@@ -128,10 +188,33 @@
   const loadingChannels = ref(true);
   const addingChannel = ref(false);
   const triggering = ref(false);
+  const triggeringCategory = ref(false);
+  const selectedFetchCategory = ref("");
+  const dashboardCategoryFilter = ref("");
 
   const newChannel = reactive({
     channelUrl: "",
     channelName: "",
+    category: "",
+  });
+
+  const availableCategories = computed(() => {
+    const categories = channels.value
+      .map((channel) => (channel.category || "").trim().toLowerCase())
+      .filter((category) => category.length > 0);
+
+    categories.push("main", "entertainment");
+    return [...new Set(categories)].sort((first, second) => first.localeCompare(second));
+  });
+
+  const filteredChannels = computed(() => {
+    if (!dashboardCategoryFilter.value) {
+      return channels.value;
+    }
+
+    return channels.value.filter(
+      (channel) => (channel.category || "").trim().toLowerCase() === dashboardCategoryFilter.value
+    );
   });
 
   const toast = reactive({
@@ -171,10 +254,23 @@
   }
 
   async function addChannel() {
+    const normalizedCategory = newChannel.category.trim().toLowerCase();
+
+    if (!normalizedCategory) {
+      showToast("Please enter a category", "error");
+      return;
+    }
+
+    if (normalizedCategory.length > 50) {
+      showToast("Category must be 50 characters or fewer", "error");
+      return;
+    }
+
     addingChannel.value = true;
     try {
-      const payload: { channelUrl: string; channelName?: string } = {
+      const payload: { channelUrl: string; channelName?: string; category: string } = {
         channelUrl: newChannel.channelUrl,
+        category: normalizedCategory,
       };
       if (newChannel.channelName.trim()) {
         payload.channelName = newChannel.channelName.trim();
@@ -185,6 +281,7 @@
       showToast(`Channel added successfully!`);
       newChannel.channelUrl = "";
       newChannel.channelName = "";
+      newChannel.category = "";
       await fetchChannels();
     } catch (err: unknown) {
       if (err && typeof err === "object" && "response" in err) {
@@ -223,11 +320,41 @@
     triggering.value = true;
     try {
       await api.post("/admin/trigger-fetch");
-      showToast("Video fetch triggered! Processing in background.");
+      showToast("Main channel fetch triggered! Processing in background.");
     } catch {
       showToast("Failed to trigger fetch", "error");
     } finally {
       triggering.value = false;
+    }
+  }
+
+  async function triggerFetchByCategory() {
+    const normalizedCategory = selectedFetchCategory.value.trim().toLowerCase();
+
+    if (!normalizedCategory) {
+      showToast("Please enter a category", "error");
+      return;
+    }
+
+    if (normalizedCategory.length > 50) {
+      showToast("Category must be 50 characters or fewer", "error");
+      return;
+    }
+
+    triggeringCategory.value = true;
+    try {
+      selectedFetchCategory.value = normalizedCategory;
+      await api.post("/admin/fetch-category", { category: normalizedCategory });
+      showToast(`"${normalizedCategory}" channel fetch triggered! Processing in background.`);
+    } catch (err: unknown) {
+      if (err && typeof err === "object" && "response" in err) {
+        const axiosErr = err as { response?: { data?: { error?: string } } };
+        showToast(axiosErr.response?.data?.error || "Failed to trigger category fetch", "error");
+      } else {
+        showToast("Failed to trigger category fetch", "error");
+      }
+    } finally {
+      triggeringCategory.value = false;
     }
   }
 
@@ -293,6 +420,92 @@
 
   .section-header h2 {
     margin-bottom: 0;
+  }
+
+  .fetch-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .fetch-category-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .fetch-category-group input,
+  .fetch-category-group select {
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    font-size: 0.875rem;
+    background: var(--color-surface);
+    color: var(--color-text);
+  }
+
+  .table-filters {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .table-filters label {
+    font-size: 0.85rem;
+    font-weight: 500;
+  }
+
+  .table-filters select {
+    padding: 0.45rem 0.6rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    font-size: 0.875rem;
+    background: var(--color-surface);
+    color: var(--color-text);
+  }
+
+  .btn-secondary {
+    background: transparent;
+    color: var(--color-primary);
+    border: 1px solid var(--color-primary);
+    border-radius: var(--radius-sm);
+    padding: 0.45rem 0.9rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--color-primary);
+    color: white;
+  }
+
+  .btn-secondary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .category-badge {
+    display: inline-block;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: capitalize;
+    letter-spacing: 0.03em;
+  }
+
+  .category-main {
+    background: #dbeafe;
+    color: #1d4ed8;
+  }
+
+  .category-entertainment {
+    background: #fce7f3;
+    color: #9d174d;
   }
 
   .form-row {

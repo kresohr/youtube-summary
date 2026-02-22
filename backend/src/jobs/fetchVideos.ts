@@ -183,13 +183,17 @@ Rules:
 }
 
 /**
- * Main function: fetch latest videos from all channels, extract transcripts,
+ * Main function: fetch latest videos from channels of a given category, extract transcripts,
  * generate summaries, and store in database.
+ * @param categoryFilter - Only process channels with this category (defaults to 'main')
  */
-export async function fetchAndSummarizeVideos(): Promise<void> {
-  console.log(`[${new Date().toISOString()}] Starting video fetch job...`);
+export async function fetchAndSummarizeVideos(categoryFilter: string = 'main'): Promise<void> {
+  console.log(`[${new Date().toISOString()}] Starting video fetch job for category: "${categoryFilter}"...`);
 
-  const channelsResult = await query("SELECT * FROM youtube_channels");
+  const channelsResult = await query(
+    "SELECT * FROM youtube_channels WHERE LOWER(category) = LOWER($1)",
+    [categoryFilter]
+  );
   const channels = channelsResult.rows;
 
   if (channels.length === 0) {
