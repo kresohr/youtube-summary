@@ -54,3 +54,14 @@ CREATE TABLE IF NOT EXISTS pending_videos (
 
 CREATE INDEX IF NOT EXISTS idx_pending_videos_retry_count ON pending_videos(retry_count);
 CREATE INDEX IF NOT EXISTS idx_pending_videos_added_at ON pending_videos(added_at);
+
+-- Sentinel channel for manually-fetched standalone videos
+INSERT INTO youtube_channels (id, channel_id, channel_name, channel_url, category)
+VALUES (
+  '00000000-0000-0000-0000-000000000000',
+  'MANUAL',
+  'Standalone',
+  '',
+  'standalone'
+)
+ON CONFLICT (id) DO NOTHING;
