@@ -93,14 +93,36 @@
                 {{ triggeringCategory ? "Triggering..." : "🎬 Fetch Category" }}
               </button>
             </div>
+            <button
+              class="toggle-btn"
+              :class="cronActive ? 'active' : 'inactive'"
+              @click="toggleCron"
+              :disabled="togglingCron"
+            >
+              <span class="toggle-dot"></span>
+              {{
+                togglingCron
+                  ? "..."
+                  : cronActive
+                    ? "Fetching Active"
+                    : "Fetching Off"
+              }}
+            </button>
           </div>
         </div>
 
         <div class="table-filters" v-if="channels.length > 0">
           <label for="dashboardCategoryFilter">Filter by category</label>
-          <select id="dashboardCategoryFilter" v-model="dashboardCategoryFilter">
+          <select
+            id="dashboardCategoryFilter"
+            v-model="dashboardCategoryFilter"
+          >
             <option value="">All categories</option>
-            <option v-for="category in availableCategories" :key="`filter-${category}`" :value="category">
+            <option
+              v-for="category in availableCategories"
+              :key="`filter-${category}`"
+              :value="category"
+            >
               {{ category }}
             </option>
           </select>
@@ -140,8 +162,11 @@
                 </a>
               </td>
               <td>
-                <span class="category-badge" :class="`category-${channel.category ?? 'main'}`">
-                  {{ channel.category ?? 'main' }}
+                <span
+                  class="category-badge"
+                  :class="`category-${channel.category ?? 'main'}`"
+                >
+                  {{ channel.category ?? "main" }}
                 </span>
               </td>
               <td>{{ channel._count?.videos ?? 0 }}</td>
@@ -191,6 +216,8 @@
   const triggeringCategory = ref(false);
   const selectedFetchCategory = ref("");
   const dashboardCategoryFilter = ref("");
+  const cronActive = ref(true);
+  const togglingCron = ref(false);
 
   const newChannel = reactive({
     channelUrl: "",
@@ -204,7 +231,9 @@
       .filter((category) => category.length > 0);
 
     categories.push("main", "entertainment");
-    return [...new Set(categories)].sort((first, second) => first.localeCompare(second));
+    return [...new Set(categories)].sort((first, second) =>
+      first.localeCompare(second)
+    );
   });
 
   const filteredChannels = computed(() => {
@@ -213,7 +242,9 @@
     }
 
     return channels.value.filter(
-      (channel) => (channel.category || "").trim().toLowerCase() === dashboardCategoryFilter.value
+      (channel) =>
+        (channel.category || "").trim().toLowerCase() ===
+        dashboardCategoryFilter.value
     );
   });
 
@@ -268,7 +299,11 @@
 
     addingChannel.value = true;
     try {
-      const payload: { channelUrl: string; channelName?: string; category: string } = {
+      const payload: {
+        channelUrl: string;
+        channelName?: string;
+        category: string;
+      } = {
         channelUrl: newChannel.channelUrl,
         category: normalizedCategory,
       };
@@ -345,11 +380,16 @@
     try {
       selectedFetchCategory.value = normalizedCategory;
       await api.post("/admin/fetch-category", { category: normalizedCategory });
-      showToast(`"${normalizedCategory}" channel fetch triggered! Processing in background.`);
+      showToast(
+        `"${normalizedCategory}" channel fetch triggered! Processing in background.`
+      );
     } catch (err: unknown) {
       if (err && typeof err === "object" && "response" in err) {
         const axiosErr = err as { response?: { data?: { error?: string } } };
-        showToast(axiosErr.response?.data?.error || "Failed to trigger category fetch", "error");
+        showToast(
+          axiosErr.response?.data?.error || "Failed to trigger category fetch",
+          "error"
+        );
       } else {
         showToast("Failed to trigger category fetch", "error");
       }
@@ -358,12 +398,35 @@
     }
   }
 
+  async function toggleCron() {
+    togglingCron.value = true;
+    try {
+      const { data } = await api.post("/admin/cron-status", {
+        active: !cronActive.value,
+      });
+      cronActive.value = data.active;
+      showToast(`Fetching ${data.active ? "enabled" : "disabled"}.`);
+    } catch {
+      showToast("Failed to update cron status", "error");
+    } finally {
+      togglingCron.value = false;
+    }
+  }
+
   function logout() {
     localStorage.removeItem("token");
     router.push({ name: "login" });
   }
 
-  onMounted(fetchChannels);
+  onMounted(async () => {
+    await fetchChannels();
+    try {
+      const { data } = await api.get("/admin/cron-status");
+      cronActive.value = data.active;
+    } catch {
+      // Non-critical — default stays true
+    }
+  });
 </script>
 
 <style scoped>
@@ -475,7 +538,9 @@
     font-size: 0.875rem;
     font-weight: 500;
     cursor: pointer;
-    transition: background 0.15s, color 0.15s;
+    transition:
+      background 0.15s,
+      color 0.15s;
   }
 
   .btn-secondary:hover:not(:disabled) {
@@ -486,6 +551,48 @@
   .btn-secondary:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  .toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.45rem 0.9rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition:
+      background 0.2s,
+      color 0.2s,
+      border-color 0.2s;
+    white-space: nowrap;
+  }
+
+  .toggle-btn.active {
+    background: #dcfce7;
+    color: #15803d;
+    border-color: #86efac;
+  }
+
+  .toggle-btn.inactive {
+    background: var(--color-border);
+    color: var(--color-text-secondary);
+    border-color: var(--color-border);
+  }
+
+  .toggle-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .toggle-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
   }
 
   .category-badge {

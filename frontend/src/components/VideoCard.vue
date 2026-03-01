@@ -33,6 +33,10 @@
         View More
       </button>
 
+      <div v-if="formattedDuration" class="video-duration">
+        {{ formattedDuration }}
+      </div>
+
       <div class="card-meta">
         <span class="channel-name">{{ video.channel.channelName }}</span>
         <span class="posted-time">{{ timeAgo }}</span>
@@ -103,6 +107,7 @@
     summary: string;
     videoUrl: string;
     publishedAt: string;
+    durationSeconds: number | null;
     channel: {
       channelName: string;
       channelUrl: string;
@@ -117,6 +122,17 @@
     return formatDistanceToNow(new Date(props.video.publishedAt), {
       addSuffix: true,
     });
+  });
+
+  const formattedDuration = computed(() => {
+    const s = props.video.durationSeconds;
+    if (!s) return "";
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    const mm = String(m).padStart(2, "0");
+    const ss = String(sec).padStart(2, "0");
+    return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
   });
 
   const isLongSummary = computed(() => {
@@ -217,6 +233,19 @@
 
   .view-more-btn:hover {
     color: var(--color-primary-hover);
+  }
+
+  .video-duration {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--color-text-secondary);
+    background: var(--color-border);
+    border-radius: 4px;
+    padding: 0.15rem 0.4rem;
+    margin-bottom: 0.6rem;
+    letter-spacing: 0.03em;
   }
 
   .card-meta {

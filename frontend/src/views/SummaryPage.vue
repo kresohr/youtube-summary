@@ -18,7 +18,11 @@
         </select>
         <select v-model="selectedCategory" @change="fetchVideos">
           <option value="">All Categories</option>
-          <option v-for="category in categories" :key="category" :value="category">
+          <option
+            v-for="category in categories"
+            :key="category"
+            :value="category"
+          >
             {{ category }}
           </option>
         </select>
@@ -72,6 +76,7 @@
     publishedAt: string;
     category: string;
     channelId: string;
+    durationSeconds: number | null;
     channel: {
       channelName: string;
       channelUrl: string;
