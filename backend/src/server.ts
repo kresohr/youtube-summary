@@ -2,7 +2,6 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
-import cron from "node-cron";
 
 import { noIndexMiddleware } from "./middleware/noIndex.js";
 import authRoutes from "./routes/auth.js";
@@ -10,6 +9,7 @@ import channelRoutes from "./routes/channels.js";
 import videoRoutes from "./routes/videos.js";
 import adminRoutes from "./routes/admin.js";
 import { fetchAndSummarizeVideos } from "./jobs/fetchVideos.js";
+import { initCron } from "./lib/cronManager.js";
 
 // Fail fast if critical env vars are missing
 if (!process.env.JWT_SECRET) {
@@ -21,11 +21,13 @@ const PORT = process.env.PORT || 4000;
 
 // Security middleware
 app.use(helmet());
-app.use(cors({
-  origin: process.env.CORS_ORIGIN || "http://localhost:8080",
-  methods: ["GET", "POST", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-}));
+app.use(
+  cors({
+    origin: process.env.CORS_ORIGIN || "http://localhost:8080",
+    methods: ["GET", "POST", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 app.use(express.json({ limit: "1mb" }));
 
 // Disable x-powered-by (defense in depth, helmet also handles this)
@@ -57,17 +59,6 @@ app.listen(PORT, () => {
     console.error("Startup fetch error:", error);
   });
 
-  // Schedule daily at 05:00
-  cron.schedule("0 5 * * *", () => {
-    console.log(
-      `[${new Date().toISOString()}] Cron triggered: daily video fetch`
-    );
-    fetchAndSummarizeVideos().catch((error) => {
-      console.error("Cron fetch error:", error);
-    });
-  });
-
-  console.log(
-    `[${new Date().toISOString()}] Cron job scheduled: daily at 05:00`
-  );
+  // Initialize scheduled cron job
+  initCron();
 });
