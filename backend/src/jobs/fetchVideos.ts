@@ -30,7 +30,7 @@ interface ParsedVideo {
 }
 
 /** Parse an ISO 8601 duration string (e.g. "PT1H2M3S") to total seconds. */
-function parseIso8601Duration(duration: string): number {
+export function parseIso8601Duration(duration: string): number {
   const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
   if (!match) return 0;
   const hours = parseInt(match[1] ?? "0", 10);
@@ -40,7 +40,7 @@ function parseIso8601Duration(duration: string): number {
 }
 
 /** Batch-fetch contentDetails durations for up to 50 video IDs in one API call. */
-async function fetchVideoDurations(
+export async function fetchVideoDurations(
   videoIds: string[]
 ): Promise<Map<string, number>> {
   const map = new Map<string, number>();
@@ -133,7 +133,7 @@ async function fetchLatestVideos(
 /**
  * Get transcript from YouTube via youtube-transcript-plus.
  */
-async function getTranscriptFromYouTube(
+export async function getTranscriptFromYouTube(
   videoId: string
 ): Promise<string | null> {
   try {
@@ -156,7 +156,7 @@ async function getTranscriptFromYouTube(
 /**
  * Generate a summary using OpenRouter API with a free model.
  */
-async function generateSummaryWithOpenRouter(
+export async function generateSummaryWithOpenRouter(
   transcript: string,
   videoTitle: string
 ): Promise<string> {
