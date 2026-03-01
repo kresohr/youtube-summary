@@ -60,6 +60,83 @@
         </form>
       </section>
 
+      <!-- Fetch Single Video Section -->
+      <section class="admin-section">
+        <h2>Fetch Single Video</h2>
+        <p class="section-description">
+          Paste a YouTube video URL to fetch its transcript and generate a
+          summary.
+        </p>
+        <form @submit.prevent="fetchSingleVideo" class="single-video-form">
+          <div class="form-row form-row-single">
+            <div class="form-group form-group-grow">
+              <label for="singleVideoUrl">YouTube Video URL</label>
+              <input
+                id="singleVideoUrl"
+                v-model="singleVideoUrl"
+                placeholder="https://youtube.com/watch?v=... or https://youtu.be/..."
+                required
+              />
+            </div>
+          </div>
+          <button
+            type="submit"
+            class="btn-primary"
+            :disabled="fetchingVideo"
+          >
+            {{
+              fetchingVideo ? "Processing…" : "🎯 Fetch &amp; Summarize"
+            }}
+          </button>
+          <span v-if="fetchingVideo" class="fetch-progress">
+            <span class="spinner spinner-sm"></span>
+            Fetching transcript &amp; generating summary…
+          </span>
+        </form>
+      </section>
+
+      <!-- Standalone Videos Section -->
+      <section v-if="standaloneVideos.length > 0" class="admin-section">
+        <h2>Standalone Videos</h2>
+        <table class="channels-table">
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Duration</th>
+              <th>Fetched</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="video in standaloneVideos"
+              :key="video.id"
+            >
+              <td>
+                <a
+                  :href="video.videoUrl"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="standalone-video-title"
+                >
+                  {{ video.title }}
+                </a>
+              </td>
+              <td>{{ formatDuration(video.durationSeconds) }}</td>
+              <td>{{ formatDate(video.fetchedAt) }}</td>
+              <td>
+                <button
+                  class="btn-danger btn-sm"
+                  @click="deleteStandaloneVideo(video)"
+                >
+                  Delete
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
       <!-- Channels List -->
       <section class="admin-section">
         <div class="section-header">
@@ -207,6 +284,18 @@
     _count?: { videos: number };
   }
 
+  interface StandaloneVideo {
+    id: string;
+    videoId: string;
+    title: string;
+    thumbnail: string;
+    videoUrl: string;
+    publishedAt: string;
+    fetchedAt: string;
+    durationSeconds: number | null;
+    summary: string;
+  }
+
   const router = useRouter();
 
   const channels = ref<Channel[]>([]);
@@ -218,6 +307,10 @@
   const dashboardCategoryFilter = ref("");
   const cronActive = ref(true);
   const togglingCron = ref(false);
+
+  const singleVideoUrl = ref("");
+  const fetchingVideo = ref(false);
+  const standaloneVideos = ref<StandaloneVideo[]>([]);
 
   const newChannel = reactive({
     channelUrl: "",
@@ -269,6 +362,16 @@
       month: "short",
       day: "numeric",
     });
+  }
+
+  function formatDuration(seconds: number | null): string {
+    if (seconds === null || seconds === undefined) return "—";
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) return `${h}h ${m}m`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
   }
 
   async function fetchChannels() {
@@ -413,13 +516,97 @@
     }
   }
 
+  async function fetchStandaloneVideos(): Promise<void> {
+    try {
+      const { data } = await api.get("/admin/standalone-videos");
+      standaloneVideos.value = data;
+    } catch (error) {
+      console.error("Error fetching standalone videos:", error);
+    }
+  }
+
+  async function fetchSingleVideo(): Promise<void> {
+    const url = singleVideoUrl.value.trim();
+    if (!url) {
+      showToast("Please enter a YouTube video URL", "error");
+      return;
+    }
+
+    fetchingVideo.value = true;
+    try {
+      // Start the job
+      const { data: startData } = await api.post(
+        "/admin/fetch-single-video",
+        { videoUrl: url }
+      );
+      const jobId: string = startData.jobId;
+
+      // Poll for completion
+      const result = await pollJobStatus(jobId);
+
+      if (result.status === "done") {
+        showToast("Video summarized successfully!");
+        singleVideoUrl.value = "";
+        await fetchStandaloneVideos();
+      } else if (result.status === "error") {
+        showToast(result.error ?? "Failed to process video", "error");
+      }
+    } catch (err: unknown) {
+      if (err && typeof err === "object" && "response" in err) {
+        const axiosErr = err as { response?: { data?: { error?: string } } };
+        showToast(
+          axiosErr.response?.data?.error ?? "Failed to fetch video",
+          "error"
+        );
+      } else {
+        showToast("Failed to fetch video", "error");
+      }
+    } finally {
+      fetchingVideo.value = false;
+    }
+  }
+
+  async function pollJobStatus(
+    jobId: string
+  ): Promise<{ status: string; error?: string }> {
+    const maxAttempts = 120; // 4 minutes max (120 × 2s)
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const { data } = await api.get(`/admin/fetch-single-video/${jobId}`);
+      if (data.status !== "pending") {
+        return data;
+      }
+    }
+    return { status: "error", error: "Job timed out" };
+  }
+
+  async function deleteStandaloneVideo(video: StandaloneVideo): Promise<void> {
+    if (
+      !confirm(
+        `Are you sure you want to delete "${video.title}"?`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      await api.delete(`/admin/videos/${video.id}`);
+      showToast(`Video "${video.title}" deleted.`);
+      standaloneVideos.value = standaloneVideos.value.filter(
+        (v) => v.id !== video.id
+      );
+    } catch {
+      showToast("Failed to delete video", "error");
+    }
+  }
+
   function logout() {
     localStorage.removeItem("token");
     router.push({ name: "login" });
   }
 
   onMounted(async () => {
-    await fetchChannels();
+    await Promise.all([fetchChannels(), fetchStandaloneVideos()]);
     try {
       const { data } = await api.get("/admin/cron-status");
       cronActive.value = data.active;
@@ -726,5 +913,52 @@
       transform: translateX(0);
       opacity: 1;
     }
+  }
+
+  .section-description {
+    color: var(--color-text-secondary);
+    font-size: 0.875rem;
+    margin-bottom: 1rem;
+  }
+
+  .single-video-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem;
+  }
+
+  .form-row-single {
+    flex: 1;
+    min-width: 300px;
+    margin-bottom: 0;
+  }
+
+  .form-group-grow {
+    flex: 1;
+  }
+
+  .fetch-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--color-text-secondary);
+    font-size: 0.85rem;
+  }
+
+  .spinner-sm {
+    width: 16px;
+    height: 16px;
+    border-width: 2px;
+  }
+
+  .standalone-video-title {
+    color: var(--color-primary);
+    text-decoration: none;
+    font-weight: 500;
+  }
+
+  .standalone-video-title:hover {
+    text-decoration: underline;
   }
 </style>
