@@ -19,6 +19,9 @@ if (!process.env.JWT_SECRET) {
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// Trust first proxy (nginx) so X-Forwarded-For is used for client IP
+app.set("trust proxy", 1);
+
 // Security middleware
 app.use(helmet());
 app.use(
