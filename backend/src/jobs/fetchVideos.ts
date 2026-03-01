@@ -13,12 +13,60 @@ interface YouTubeVideoItem {
   };
 }
 
+interface YouTubeVideoDetails {
+  id: string;
+  contentDetails: {
+    duration: string; // ISO 8601 duration, e.g. "PT1H2M3S"
+  };
+}
+
 interface ParsedVideo {
   id: string;
   title: string;
   description: string;
   thumbnail: string;
   publishedAt: string;
+  durationSeconds: number | null;
+}
+
+/** Parse an ISO 8601 duration string (e.g. "PT1H2M3S") to total seconds. */
+function parseIso8601Duration(duration: string): number {
+  const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return 0;
+  const hours = parseInt(match[1] ?? "0", 10);
+  const minutes = parseInt(match[2] ?? "0", 10);
+  const seconds = parseInt(match[3] ?? "0", 10);
+  return hours * 3600 + minutes * 60 + seconds;
+}
+
+/** Batch-fetch contentDetails durations for up to 50 video IDs in one API call. */
+async function fetchVideoDurations(
+  videoIds: string[]
+): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  if (videoIds.length === 0) return map;
+
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return map;
+
+  const url = new URL("https://www.googleapis.com/youtube/v3/videos");
+  url.searchParams.set("part", "contentDetails");
+  url.searchParams.set("id", videoIds.join(","));
+  url.searchParams.set("key", apiKey);
+
+  try {
+    const response = await fetch(url.toString());
+    if (!response.ok) return map;
+    const data = await response.json();
+    if (!data.items || !Array.isArray(data.items)) return map;
+    for (const item of data.items as YouTubeVideoDetails[]) {
+      map.set(item.id, parseIso8601Duration(item.contentDetails.duration));
+    }
+  } catch (error) {
+    console.error("Error fetching video durations:", error);
+  }
+
+  return map;
 }
 
 /**
@@ -63,12 +111,22 @@ async function fetchLatestVideos(
     return [];
   }
 
-  return data.items.map((item: YouTubeVideoItem) => ({
-    id: item.id.videoId,
-    title: item.snippet.title,
-    description: item.snippet.description,
-    thumbnail: item.snippet.thumbnails.high.url,
-    publishedAt: item.snippet.publishedAt,
+  const parsed: Omit<ParsedVideo, "durationSeconds">[] = data.items.map(
+    (item: YouTubeVideoItem) => ({
+      id: item.id.videoId,
+      title: item.snippet.title,
+      description: item.snippet.description,
+      thumbnail: item.snippet.thumbnails.high.url,
+      publishedAt: item.snippet.publishedAt,
+    })
+  );
+
+  // Batch-fetch durations for all videos in a single API call
+  const durationsMap = await fetchVideoDurations(parsed.map((v) => v.id));
+
+  return parsed.map((v) => ({
+    ...v,
+    durationSeconds: durationsMap.get(v.id) ?? null,
   }));
 }
 
@@ -86,7 +144,9 @@ async function getTranscriptFromYouTube(
       return null;
     }
 
-    return transcriptSegments.map((segment: { text: string }) => segment.text).join(" ");
+    return transcriptSegments
+      .map((segment: { text: string }) => segment.text)
+      .join(" ");
   } catch (error) {
     console.error(`Error fetching transcript for ${videoId}:`, error);
     return null;
@@ -182,13 +242,91 @@ Rules:
   }
 }
 
+/** Retry pending videos that previously had no transcript. One retry allowed;
+ *  if still no transcript after the second attempt, the video is discarded. */
+async function processPendingVideos(): Promise<void> {
+  const pendingResult = await query(
+    "SELECT * FROM pending_videos ORDER BY added_at ASC",
+    []
+  );
+  const pending = pendingResult.rows;
+  if (pending.length === 0) return;
+
+  console.log(
+    `[${new Date().toISOString()}] Processing ${pending.length} pending video(s)...`
+  );
+
+  for (const row of pending) {
+    try {
+      const transcript = await getTranscriptFromYouTube(row.video_id);
+
+      if (!transcript || transcript.length < 100) {
+        // Still no transcript
+        if (row.retry_count >= 1) {
+          // Second failure — discard
+          console.log(
+            `  Discarding pending video (no transcript after retry): ${row.title}`
+          );
+          await query("DELETE FROM pending_videos WHERE video_id = $1", [
+            row.video_id,
+          ]);
+        } else {
+          // First failure — increment retry counter for the next run
+          await query(
+            "UPDATE pending_videos SET retry_count = retry_count + 1 WHERE video_id = $1",
+            [row.video_id]
+          );
+          console.log(
+            `  No transcript yet for "${row.title}", will retry next run.`
+          );
+        }
+        continue;
+      }
+
+      // We have a transcript — generate summary and move to videos table
+      const summary = await generateSummaryWithOpenRouter(
+        transcript,
+        row.title
+      );
+      await query(
+        `INSERT INTO videos (id, video_id, title, thumbnail, summary, video_url, published_at, fetched_at, channel_id, duration_seconds)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW(), $7, $8)
+         ON CONFLICT (video_id) DO NOTHING`,
+        [
+          row.video_id,
+          row.title,
+          row.thumbnail,
+          summary,
+          row.video_url,
+          row.published_at,
+          row.channel_id,
+          row.duration_seconds,
+        ]
+      );
+      await query("DELETE FROM pending_videos WHERE video_id = $1", [
+        row.video_id,
+      ]);
+      console.log(`  ✓ Processed pending video: ${row.title}`);
+    } catch (error) {
+      console.error(
+        `Error processing pending video ${row.title}:`,
+        error instanceof Error ? error.message : "Unknown error"
+      );
+    }
+  }
+}
+
 /**
  * Main function: fetch latest videos from channels of a given category, extract transcripts,
  * generate summaries, and store in database.
  * @param categoryFilter - Only process channels with this category (defaults to 'main')
  */
-export async function fetchAndSummarizeVideos(categoryFilter: string = 'main'): Promise<void> {
-  console.log(`[${new Date().toISOString()}] Starting video fetch job for category: "${categoryFilter}"...`);
+export async function fetchAndSummarizeVideos(
+  categoryFilter: string = "main"
+): Promise<void> {
+  console.log(
+    `[${new Date().toISOString()}] Starting video fetch job for category: "${categoryFilter}"...`
+  );
 
   const channelsResult = await query(
     "SELECT * FROM youtube_channels WHERE LOWER(category) = LOWER($1)",
@@ -215,28 +353,46 @@ export async function fetchAndSummarizeVideos(categoryFilter: string = 'main'): 
       console.log(`  Found ${videos.length} videos in last 24h`);
 
       for (const video of videos) {
-        // Check if video already exists in DB
-        const existsResult = await query(
-          "SELECT id FROM videos WHERE video_id = $1",
-          [video.id]
-        );
+        // Skip if already in the videos table or already queued in pending_videos
+        const [existsInVideos, existsInPending] = await Promise.all([
+          query("SELECT id FROM videos WHERE video_id = $1", [video.id]),
+          query("SELECT id FROM pending_videos WHERE video_id = $1", [
+            video.id,
+          ]),
+        ]);
 
-        if (existsResult.rows.length > 0) {
-          console.log(`  Skipping already processed video: ${video.title}`);
+        if (existsInVideos.rows.length > 0 || existsInPending.rows.length > 0) {
+          console.log(
+            `  Skipping already processed/queued video: ${video.title}`
+          );
           continue;
         }
 
         console.log(`  Processing video: ${video.title}`);
 
-        // Get transcript using YouTube's official API
-        let transcript = await getTranscriptFromYouTube(video.id);
+        const transcript = await getTranscriptFromYouTube(video.id);
 
-        // Fallback to description if transcript unavailable
         if (!transcript || transcript.length < 100) {
+          // No transcript — queue for later retry instead of falling back to description
           console.log(
-            `  No transcript for ${video.id}, using title + description`
+            `  No transcript for "${video.title}", adding to pending queue.`
           );
-          transcript = `Description: ${video.description}`;
+          await query(
+            `INSERT INTO pending_videos (id, video_id, title, thumbnail, description, video_url, published_at, channel_id, duration_seconds)
+             VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (video_id) DO NOTHING`,
+            [
+              video.id,
+              video.title,
+              video.thumbnail,
+              video.description,
+              `https://youtube.com/watch?v=${video.id}`,
+              new Date(video.publishedAt),
+              channel.id,
+              video.durationSeconds,
+            ]
+          );
+          continue;
         }
 
         // Generate summary using OpenRouter
@@ -247,8 +403,8 @@ export async function fetchAndSummarizeVideos(categoryFilter: string = 'main'): 
 
         // Save to database
         await query(
-          `INSERT INTO videos (id, video_id, title, thumbnail, summary, video_url, published_at, fetched_at, channel_id)
-           VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW(), $7)`,
+          `INSERT INTO videos (id, video_id, title, thumbnail, summary, video_url, published_at, fetched_at, channel_id, duration_seconds)
+           VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW(), $7, $8)`,
           [
             video.id,
             video.title,
@@ -257,6 +413,7 @@ export async function fetchAndSummarizeVideos(categoryFilter: string = 'main'): 
             `https://youtube.com/watch?v=${video.id}`,
             new Date(video.publishedAt),
             channel.id,
+            video.durationSeconds,
           ]
         );
 
@@ -264,11 +421,17 @@ export async function fetchAndSummarizeVideos(categoryFilter: string = 'main'): 
         console.log(`  ✓ Saved video: ${video.title}`);
       }
     } catch (error) {
-      console.error(`Error processing channel ${channel.channel_name}:`, error instanceof Error ? error.message : "Unknown error");
+      console.error(
+        `Error processing channel ${channel.channel_name}:`,
+        error instanceof Error ? error.message : "Unknown error"
+      );
     }
   }
 
   console.log(
-    `[${new Date().toISOString()}] Job complete. Processed ${processedCount} new videos.`
+    `[${new Date().toISOString()}] Fetch job complete. Processed ${processedCount} new video(s).`
   );
+
+  // Process any pending videos that previously had no transcript
+  await processPendingVideos();
 }

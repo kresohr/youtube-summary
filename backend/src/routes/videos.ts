@@ -3,7 +3,8 @@ import { query } from "../lib/db.js";
 
 const router = Router();
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_LIMIT = 100;
 
 // GET /api/videos - Fetch all summarized videos (public)
@@ -14,7 +15,10 @@ router.get("/", async (req: Request, res: Response): Promise<void> => {
     const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
     const channelId = req.query.channelId as string | undefined;
     const categoryInput = req.query.category as string | undefined;
-    const category = typeof categoryInput === "string" ? categoryInput.trim().toLowerCase() : "";
+    const category =
+      typeof categoryInput === "string"
+        ? categoryInput.trim().toLowerCase()
+        : "";
 
     // Validate channelId format if provided
     if (channelId && !UUID_REGEX.test(channelId)) {
@@ -45,7 +49,8 @@ router.get("/", async (req: Request, res: Response): Promise<void> => {
       conditions.push(`LOWER(c.category) = $${filterParams.length}`);
     }
 
-    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const whereClause =
+      conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     const videosQuery = `
       SELECT v.*, c.channel_name, c.channel_url, c.category AS channel_category
       FROM videos v
@@ -78,6 +83,7 @@ router.get("/", async (req: Request, res: Response): Promise<void> => {
       fetchedAt: row.fetched_at,
       channelId: row.channel_id,
       category: row.channel_category,
+      durationSeconds: row.duration_seconds ?? null,
       channel: {
         channelName: row.channel_name,
         channelUrl: row.channel_url,
@@ -90,7 +96,10 @@ router.get("/", async (req: Request, res: Response): Promise<void> => {
       hasMore: offset + limit < total,
     });
   } catch (error) {
-    console.error("Error fetching videos:", error instanceof Error ? error.message : "Unknown error");
+    console.error(
+      "Error fetching videos:",
+      error instanceof Error ? error.message : "Unknown error"
+    );
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -130,6 +139,7 @@ router.get("/:id", async (req: Request, res: Response): Promise<void> => {
       fetchedAt: row.fetched_at,
       channelId: row.channel_id,
       category: row.channel_category,
+      durationSeconds: row.duration_seconds ?? null,
       channel: {
         channelName: row.channel_name,
         channelUrl: row.channel_url,
@@ -138,7 +148,10 @@ router.get("/:id", async (req: Request, res: Response): Promise<void> => {
 
     res.json(video);
   } catch (error) {
-    console.error("Error fetching video:", error instanceof Error ? error.message : "Unknown error");
+    console.error(
+      "Error fetching video:",
+      error instanceof Error ? error.message : "Unknown error"
+    );
     res.status(500).json({ error: "Internal server error" });
   }
 });
