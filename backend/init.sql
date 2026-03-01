@@ -32,5 +32,25 @@ CREATE TABLE IF NOT EXISTS videos (
   channel_id UUID NOT NULL REFERENCES youtube_channels(id) ON DELETE CASCADE
 );
 
+-- Migrate existing videos: add duration_seconds column if it doesn't exist yet
+ALTER TABLE videos ADD COLUMN IF NOT EXISTS duration_seconds INTEGER;
+
 CREATE INDEX IF NOT EXISTS idx_videos_published_at ON videos(published_at);
 CREATE INDEX IF NOT EXISTS idx_videos_channel_id ON videos(channel_id);
+
+CREATE TABLE IF NOT EXISTS pending_videos (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  video_id VARCHAR(255) UNIQUE NOT NULL,
+  title VARCHAR(512) NOT NULL,
+  thumbnail VARCHAR(512) NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  video_url VARCHAR(512) NOT NULL,
+  published_at TIMESTAMP NOT NULL,
+  added_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  duration_seconds INTEGER,
+  channel_id UUID NOT NULL REFERENCES youtube_channels(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_videos_retry_count ON pending_videos(retry_count);
+CREATE INDEX IF NOT EXISTS idx_pending_videos_added_at ON pending_videos(added_at);
