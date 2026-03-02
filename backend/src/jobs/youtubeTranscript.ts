@@ -74,16 +74,87 @@ export const transcribeVideo = async (videoUrl: string) => {
     }
   }
 
-  // All clients exhausted — throw the last error
+  // All Innertube clients exhausted — try TubeText as last-resort fallback
+  console.warn(
+    `[Transcript] All Innertube clients failed for ${videoId}, trying TubeText fallback...`
+  );
+  try {
+    const tubeTextSegments = await fetchTranscriptFromTubeText(videoId);
+    if (tubeTextSegments && tubeTextSegments.length > 0) {
+      const charCount = tubeTextSegments.reduce(
+        (sum, s) => sum + s.text.length,
+        0
+      );
+      console.log(
+        `[Transcript] Success (TubeText) for ${videoId}: ${tubeTextSegments.length} segment(s), ~${charCount} chars`
+      );
+      return tubeTextSegments;
+    }
+  } catch (tubeTextError) {
+    const errName =
+      tubeTextError instanceof Error
+        ? tubeTextError.constructor.name
+        : "Unknown";
+    const errMsg =
+      tubeTextError instanceof Error
+        ? tubeTextError.message
+        : String(tubeTextError);
+    console.error(
+      `[Transcript] TubeText fallback FAILED for ${videoId} [${errName}]: ${errMsg}`
+    );
+  }
+
+  // Everything failed
   const errName =
     lastError instanceof Error ? lastError.constructor.name : "Unknown";
   const errMsg =
     lastError instanceof Error ? lastError.message : String(lastError);
   console.error(
-    `[Transcript] All clients FAILED for ${videoId} [${errName}]: ${errMsg}`
+    `[Transcript] All sources FAILED for ${videoId} [${errName}]: ${errMsg}`
   );
   throw lastError;
 };
+
+/**
+ * Fallback transcript fetch via TubeText (free, no API key needed).
+ * Returns segments in the same {text, duration, offset, lang} shape as youtube-transcript-plus.
+ */
+async function fetchTranscriptFromTubeText(
+  videoId: string
+): Promise<{ text: string; duration: number; offset: number; lang: string }[]> {
+  const url = `https://tubetext.app/api/transcript?videoId=${videoId}`;
+  console.log(`[Transcript] TubeText request: GET ${url}`);
+
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+      "User-Agent": USER_AGENT,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`TubeText API error for ${videoId}: HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+
+  if (!data.transcript || !Array.isArray(data.transcript)) {
+    throw new Error(
+      `TubeText returned unexpected shape for ${videoId}: ${JSON.stringify(data).substring(0, 200)}`
+    );
+  }
+
+  // Normalise to {text, duration, offset, lang}
+  return data.transcript.map(
+    (segment: { text: string; duration?: number; offset?: number; lang?: string }) => ({
+      text: segment.text ?? "",
+      duration: segment.duration ?? 0,
+      offset: segment.offset ?? 0,
+      lang: segment.lang ?? "en",
+    })
+  );
+}
 
 export function extractVideoId(input: string): string | null {
   try {

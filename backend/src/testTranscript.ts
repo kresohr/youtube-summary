@@ -101,6 +101,29 @@ async function main(): Promise<void> {
     allPassed = false;
   }
 
+  // --- Test 5: video that fails both Innertube clients → should succeed via TubeText ---
+  const TUBETEXT_VIDEO_ID = "9G2MRFs4vac"; // Andrew Huberman video — fails WEB+ANDROID Innertube in prod
+  console.log(`Test 5: transcribeVideo("${TUBETEXT_VIDEO_ID}") — TubeText fallback expected`);
+  try {
+    const segments = await transcribeVideo(TUBETEXT_VIDEO_ID);
+
+    if (!segments || segments.length === 0) {
+      console.error("  ✗ FAIL: No segments returned");
+      allPassed = false;
+    } else {
+      const fullText = segments.map((s: { text: string }) => s.text).join(" ");
+      console.log(
+        `  ✓ OK: ${segments.length} segments, ${fullText.length} chars`
+      );
+      console.log(`  Preview: "${fullText.substring(0, 200)}..."\n`);
+    }
+  } catch (error) {
+    const errName = error instanceof Error ? error.constructor.name : "Unknown";
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error(`  ✗ FAIL [${errName}]: ${errMsg}`);
+    allPassed = false;
+  }
+
   // --- Result ---
   console.log("=== Result ===");
   if (allPassed) {
