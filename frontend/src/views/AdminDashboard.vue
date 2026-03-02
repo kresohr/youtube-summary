@@ -79,14 +79,8 @@
               />
             </div>
           </div>
-          <button
-            type="submit"
-            class="btn-primary"
-            :disabled="fetchingVideo"
-          >
-            {{
-              fetchingVideo ? "Processing…" : "🎯 Fetch &amp; Summarize"
-            }}
+          <button type="submit" class="btn-primary" :disabled="fetchingVideo">
+            {{ fetchingVideo ? "Processing…" : "🎯 Fetch &amp; Summarize" }}
           </button>
           <span v-if="fetchingVideo" class="fetch-progress">
             <span class="spinner spinner-sm"></span>
@@ -108,10 +102,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr
-              v-for="video in standaloneVideos"
-              :key="video.id"
-            >
+            <tr v-for="video in standaloneVideos" :key="video.id">
               <td>
                 <a
                   :href="video.videoUrl"
@@ -535,10 +526,9 @@
     fetchingVideo.value = true;
     try {
       // Start the job
-      const { data: startData } = await api.post(
-        "/admin/fetch-single-video",
-        { videoUrl: url }
-      );
+      const { data: startData } = await api.post("/admin/fetch-single-video", {
+        videoUrl: url,
+      });
       const jobId: string = startData.jobId;
 
       // Poll for completion
@@ -581,11 +571,7 @@
   }
 
   async function deleteStandaloneVideo(video: StandaloneVideo): Promise<void> {
-    if (
-      !confirm(
-        `Are you sure you want to delete "${video.title}"?`
-      )
-    ) {
+    if (!confirm(`Are you sure you want to delete "${video.title}"?`)) {
       return;
     }
 
