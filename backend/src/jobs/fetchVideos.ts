@@ -136,19 +136,36 @@ async function fetchLatestVideos(
 export async function getTranscriptFromYouTube(
   videoId: string
 ): Promise<string | null> {
+  console.log(
+    `[GetTranscript] Starting transcript fetch for videoId: ${videoId}`
+  );
   try {
     const videoUrl = `https://youtube.com/watch?v=${videoId}`;
     const transcriptSegments = await transcribeVideo(videoUrl);
 
     if (!transcriptSegments || transcriptSegments.length === 0) {
+      console.warn(`[GetTranscript] No segments returned for ${videoId}`);
       return null;
     }
 
-    return transcriptSegments
+    console.log(
+      `[GetTranscript] Got ${transcriptSegments.length} segment(s) for ${videoId}`
+    );
+
+    const fullText = transcriptSegments
       .map((segment: { text: string }) => segment.text)
       .join(" ");
+
+    console.log(
+      `[GetTranscript] Joined transcript for ${videoId}: ${fullText.length} chars`
+    );
+    return fullText;
   } catch (error) {
-    console.error(`Error fetching transcript for ${videoId}:`, error);
+    const errName = error instanceof Error ? error.constructor.name : "Unknown";
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error(
+      `[GetTranscript] FAILED for ${videoId} [${errName}]: ${errMsg}`
+    );
     return null;
   }
 }
@@ -258,7 +275,13 @@ async function processPendingVideos(): Promise<void> {
 
   for (const row of pending) {
     try {
+      console.log(
+        `[Pending] Attempting transcript for "${row.title}" (${row.video_id}), retry_count=${row.retry_count}`
+      );
       const transcript = await getTranscriptFromYouTube(row.video_id);
+      console.log(
+        `[Pending] Transcript result for ${row.video_id}: ${transcript ? `${transcript.length} chars` : "null"}`
+      );
 
       if (!transcript || transcript.length < 100) {
         // Still no transcript
@@ -368,9 +391,13 @@ export async function fetchAndSummarizeVideos(
           continue;
         }
 
-        console.log(`  Processing video: ${video.title}`);
+        console.log(`  Processing video: ${video.title} (${video.id})`);
 
+        console.log(`  [Cron] Fetching transcript for ${video.id}...`);
         const transcript = await getTranscriptFromYouTube(video.id);
+        console.log(
+          `  [Cron] Transcript result for ${video.id}: ${transcript ? `${transcript.length} chars` : "null"}`
+        );
 
         if (!transcript || transcript.length < 100) {
           // No transcript — queue for later retry instead of falling back to description

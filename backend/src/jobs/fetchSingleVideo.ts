@@ -39,9 +39,12 @@ const jobs = new Map<string, SingleVideoJob>();
 
 /** Auto-clean completed/errored jobs after 5 minutes */
 function scheduleCleanup(jobId: string): void {
-  setTimeout(() => {
-    jobs.delete(jobId);
-  }, 5 * 60 * 1000);
+  setTimeout(
+    () => {
+      jobs.delete(jobId);
+    },
+    5 * 60 * 1000
+  );
 }
 
 /** Fetch video metadata (title, thumbnail, publishedAt) from YouTube Data API */
@@ -69,9 +72,7 @@ async function fetchVideoMetadata(
     return {
       title: snippet.title,
       thumbnail:
-        snippet.thumbnails.high?.url ??
-        snippet.thumbnails.default?.url ??
-        "",
+        snippet.thumbnails.high?.url ?? snippet.thumbnails.default?.url ?? "",
       publishedAt: snippet.publishedAt,
     };
   } catch (error) {
@@ -87,13 +88,17 @@ async function processSingleVideo(
   videoId: string
 ): Promise<void> {
   try {
-    console.log(`[SingleVideo] Starting job ${jobId} for video ${videoId}`);
+    console.log(
+      `[SingleVideo] Starting job ${jobId} for video ${videoId} (url: ${videoUrl})`
+    );
 
     // 1. Check for duplicate
+    console.log(`[SingleVideo] Step 1: Checking for duplicate...`);
     const existing = await query("SELECT id FROM videos WHERE video_id = $1", [
       videoId,
     ]);
     if (existing.rows.length > 0) {
+      console.log(`[SingleVideo] Duplicate found for ${videoId}, aborting.`);
       jobs.set(jobId, {
         status: "error",
         error: "This video has already been summarized.",
@@ -103,8 +108,10 @@ async function processSingleVideo(
     }
 
     // 2. Fetch metadata (title, thumbnail, publishedAt)
+    console.log(`[SingleVideo] Step 2: Fetching metadata...`);
     const metadata = await fetchVideoMetadata(videoId);
     if (!metadata) {
+      console.error(`[SingleVideo] Metadata fetch failed for ${videoId}`);
       jobs.set(jobId, {
         status: "error",
         error: "Could not fetch video metadata from YouTube. Check the URL.",
@@ -112,14 +119,26 @@ async function processSingleVideo(
       scheduleCleanup(jobId);
       return;
     }
+    console.log(`[SingleVideo] Metadata OK: "${metadata.title}"`);
 
     // 3. Fetch duration
+    console.log(`[SingleVideo] Step 3: Fetching duration...`);
     const durationsMap = await fetchVideoDurations([videoId]);
     const durationSeconds = durationsMap.get(videoId) ?? null;
+    console.log(
+      `[SingleVideo] Duration: ${durationSeconds !== null ? `${durationSeconds}s` : "unknown"}`
+    );
 
     // 4. Fetch transcript
+    console.log(`[SingleVideo] Step 4: Fetching transcript...`);
     const transcript = await getTranscriptFromYouTube(videoId);
+    console.log(
+      `[SingleVideo] Transcript result: ${transcript ? `${transcript.length} chars` : "null"}`
+    );
     if (!transcript || transcript.length < 100) {
+      console.error(
+        `[SingleVideo] Transcript too short or missing for ${videoId}`
+      );
       jobs.set(jobId, {
         status: "error",
         error:
@@ -130,10 +149,12 @@ async function processSingleVideo(
     }
 
     // 5. Generate summary
+    console.log(`[SingleVideo] Step 5: Generating summary...`);
     const summary = await generateSummaryWithOpenRouter(
       transcript,
       metadata.title
     );
+    console.log(`[SingleVideo] Summary generated: ${summary.length} chars`);
 
     // 6. Insert into DB
     const result = await query(
@@ -168,9 +189,7 @@ async function processSingleVideo(
 
     jobs.set(jobId, { status: "done", video: videoResult });
     scheduleCleanup(jobId);
-    console.log(
-      `[SingleVideo] Job ${jobId} completed: "${metadata.title}"`
-    );
+    console.log(`[SingleVideo] Job ${jobId} completed: "${metadata.title}"`);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unknown error occurred";
@@ -210,8 +229,6 @@ export function startSingleVideoJob(videoUrl: string): {
 }
 
 /** Get the current status of a single-video job */
-export function getJobStatus(
-  jobId: string
-): SingleVideoJob | undefined {
+export function getJobStatus(jobId: string): SingleVideoJob | undefined {
   return jobs.get(jobId);
 }
