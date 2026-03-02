@@ -78,6 +78,29 @@ async function main(): Promise<void> {
     allPassed = false;
   }
 
+  // --- Test 4: previously-failing video (ANDROID client returned no captions) ---
+  const FAILING_VIDEO_ID = "5B8N8eDv5iE"; // "I hate what programming has become"
+  console.log(`Test 4: transcribeVideo("${FAILING_VIDEO_ID}") — previously failing with ANDROID client`);
+  try {
+    const segments = await transcribeVideo(FAILING_VIDEO_ID);
+
+    if (!segments || segments.length === 0) {
+      console.error("  ✗ FAIL: No segments returned");
+      allPassed = false;
+    } else {
+      const fullText = segments.map((s: { text: string }) => s.text).join(" ");
+      console.log(
+        `  ✓ OK: ${segments.length} segments, ${fullText.length} chars`
+      );
+      console.log(`  Preview: "${fullText.substring(0, 200)}..."\n`);
+    }
+  } catch (error) {
+    const errName = error instanceof Error ? error.constructor.name : "Unknown";
+    const errMsg = error instanceof Error ? error.message : String(error);
+    console.error(`  ✗ FAIL [${errName}]: ${errMsg}`);
+    allPassed = false;
+  }
+
   // --- Result ---
   console.log("=== Result ===");
   if (allPassed) {
