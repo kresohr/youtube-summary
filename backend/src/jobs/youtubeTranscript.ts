@@ -122,7 +122,7 @@ export const transcribeVideo = async (videoUrl: string) => {
 async function fetchTranscriptFromTubeText(
   videoId: string
 ): Promise<{ text: string; duration: number; offset: number; lang: string }[]> {
-  const url = `https://tubetext.app/api/transcript?videoId=${videoId}`;
+  const url = `https://tubetext.com/api/transcript?videoId=${videoId}`;
   console.log(`[Transcript] TubeText request: GET ${url}`);
 
   const response = await fetch(url, {
@@ -134,7 +134,9 @@ async function fetchTranscriptFromTubeText(
   });
 
   if (!response.ok) {
-    throw new Error(`TubeText API error for ${videoId}: HTTP ${response.status}`);
+    throw new Error(
+      `TubeText API error for ${videoId}: HTTP ${response.status}`
+    );
   }
 
   const data = await response.json();
@@ -147,7 +149,12 @@ async function fetchTranscriptFromTubeText(
 
   // Normalise to {text, duration, offset, lang}
   return data.transcript.map(
-    (segment: { text: string; duration?: number; offset?: number; lang?: string }) => ({
+    (segment: {
+      text: string;
+      duration?: number;
+      offset?: number;
+      lang?: string;
+    }) => ({
       text: segment.text ?? "",
       duration: segment.duration ?? 0,
       offset: segment.offset ?? 0,
