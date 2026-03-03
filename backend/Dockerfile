@@ -7,8 +7,12 @@ WORKDIR /app
 
 COPY package*.json ./
 
+
 # 2. Remove --ignore-scripts so bcrypt can compile its native binary
 RUN npm ci
+
+# 2b. Install Chrome for Puppeteer (required for headless transcript extraction)
+RUN npx puppeteer browsers install chrome
 
 COPY tsconfig.json ./
 COPY src ./src
