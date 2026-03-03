@@ -31,15 +31,6 @@ services:
       APP_URL: ${APP_URL}
       NODE_ENV: ${NODE_ENV}
       PORT: 4000
-      # Path to a Netscape-format cookies.txt exported from a real browser.
-      # Drop the file at backend/data/cookies.txt on the host and it will be
-      # picked up automatically by yt-dlp without rebuilding the image.
-      YTDLP_COOKIES_FILE: /app/data/cookies.txt
-    volumes:
-      # Persist the data directory so cookies.txt and yt-cookies.json survive
-      # container restarts.  Create backend/data/ on the host first:
-      #   mkdir -p backend/data
-      - ./backend/data:/app/data
     ports:
       - "4001:4000"
     depends_on:

@@ -428,13 +428,7 @@ async function fetchTranscriptViaInnerTube(
  *                          clients. These mobile clients bypass the UNPLAYABLE
  *                          status that WEB clients receive from datacenter IPs.
  *                          Includes retry-on-400 to handle rate limiting.
- *   3. yt-dlp          — Spawns a yt-dlp subprocess.  yt-dlp generates and
- *                          attaches a poToken (Proof-of-Origin token) internally,
- *                          which is required for unauthenticated access from
- *                          datacenter IP ranges since mid-2024.  It uses
- *                          up-to-date client contexts and handles the subtitle
- *                          preference and format conversion automatically.
- *   4. Headless Chromium — Launches a real browser patched with the stealth
+ *   3. Headless Chromium — Launches a real browser patched with the stealth
  *                          plugin (defeats navigator.webdriver, canvas
  *                          fingerprint, and 15+ other heuristics). Restores
  *                          persisted cookies from backend/data/yt-cookies.json
@@ -487,28 +481,7 @@ export const transcribeVideo = async (
     errors.push(`innertube-player: ${errMsg}`);
   }
 
-  // ── Method 3: yt-dlp (poToken-aware subprocess) ─────────────────────────
-  //
-  // yt-dlp generates a poToken challenge response internally, which bypasses
-  // the LOGIN_REQUIRED / bot-detection block YouTube applies to datacenter IPs
-  // since mid-2024.  This is the most reliable method for server environments
-  // (Oracle Cloud, AWS, GCP, etc.) without using proxies or authentication.
-  //
-  // Attempted after the fast HTTP methods fail; before the expensive headless
-  // browser, which also struggles from datacenter IPs despite stealth patches.
-  console.warn(`[Transcript] Trying yt-dlp for ${videoId}...`);
-  try {
-    const { fetchTranscriptViaYtDlp } = await import("./ytDlp.js");
-    const segments = await fetchTranscriptViaYtDlp(videoId);
-    return segments;
-  } catch (ytDlpError) {
-    const errMsg =
-      ytDlpError instanceof Error ? ytDlpError.message : String(ytDlpError);
-    console.warn(`[Transcript] yt-dlp failed for ${videoId}: ${errMsg}`);
-    errors.push(`yt-dlp: ${errMsg}`);
-  }
-
-  // ── Method 4: Headless browser (stealth Chromium + session cookies) ─────
+  // ── Method 3: Headless browser (stealth Chromium + session cookies) ─────
   //
   // Only attempted when all lighter-weight methods are blocked.
   // Spawns a real Chromium instance patched with puppeteer-extra-plugin-stealth
@@ -541,11 +514,9 @@ export const transcribeVideo = async (
     `[Transcript] ALL methods failed for ${videoId}: ${aggregated}`
   );
 
-  // If every non-yt-dlp failure mentions LOGIN_REQUIRED this video is
-  // sign-in-gated (age-restricted, members-only, etc.).
-  // yt-dlp errors look different (e.g. "Sign in to confirm your age") so we
-  // intentionally exclude them from this check.
-  const loginRequiredErrors = errors.filter((e) => !e.startsWith("yt-dlp:"));
+  // If every failure mentions LOGIN_REQUIRED the video is sign-in-gated
+  // (age-restricted, members-only, etc.).
+  const loginRequiredErrors = errors;
   const allLoginRequired =
     loginRequiredErrors.length > 0 &&
     loginRequiredErrors.every((e) => e.includes("LOGIN_REQUIRED"));
