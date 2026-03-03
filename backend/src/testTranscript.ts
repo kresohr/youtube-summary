@@ -80,7 +80,9 @@ async function main(): Promise<void> {
 
   // --- Test 4: previously-failing video (ANDROID client returned no captions) ---
   const FAILING_VIDEO_ID = "5B8N8eDv5iE"; // "I hate what programming has become"
-  console.log(`Test 4: transcribeVideo("${FAILING_VIDEO_ID}") — previously failing with ANDROID client`);
+  console.log(
+    `Test 4: transcribeVideo("${FAILING_VIDEO_ID}") — previously failing with ANDROID client`
+  );
   try {
     const segments = await transcribeVideo(FAILING_VIDEO_ID);
 
@@ -101,11 +103,17 @@ async function main(): Promise<void> {
     allPassed = false;
   }
 
-  // --- Test 5: video that fails both Innertube clients → should succeed via TubeText ---
-  const TUBETEXT_VIDEO_ID = "9G2MRFs4vac"; // Andrew Huberman video — fails WEB+ANDROID Innertube in prod
-  console.log(`Test 5: transcribeVideo("${TUBETEXT_VIDEO_ID}") — TubeText fallback expected`);
+  // --- Test 5: multi-language video — exercises ANDROID InnerTube fallback + language ranking ---
+  // Gangnam Style has many translated caption tracks; the ranking logic should prefer
+  // the English ASR track when no manual English track exists.
+  // Previously this test targeted TubeText; TubeText is no longer operational and has
+  // been replaced by the InnerTube ANDROID/WEB fallback as the second fallback method.
+  const MULTILANG_VIDEO_ID = "9bZkp7q19f0"; // PSY — Gangnam Style (global availability guaranteed)
+  console.log(
+    `Test 5: transcribeVideo("${MULTILANG_VIDEO_ID}") — multi-language video, InnerTube fallback`
+  );
   try {
-    const segments = await transcribeVideo(TUBETEXT_VIDEO_ID);
+    const segments = await transcribeVideo(MULTILANG_VIDEO_ID);
 
     if (!segments || segments.length === 0) {
       console.error("  ✗ FAIL: No segments returned");
