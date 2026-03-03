@@ -51,7 +51,11 @@ import puppeteerExtra from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { json3ToSegments, type Json3Event, type TranscriptSegment } from "./youtubeTranscript.js";
+import {
+  json3ToSegments,
+  type Json3Event,
+  type TranscriptSegment,
+} from "./youtubeTranscript.js";
 
 // ─── Module-level setup ───────────────────────────────────────────────────────
 
@@ -69,7 +73,7 @@ puppeteerExtra.use(StealthPlugin());
 //   dev (tsx):      __dirname = backend/src/jobs  → ../../data = backend/data ✓
 //   prod (tsc):     __dirname = backend/dist/jobs → ../../data = backend/data ✓
 /** Absolute path to the cookie store (backend/data/yt-cookies.json). */
-const DATA_DIR    = join(__dirname, "..", "..", "data");
+const DATA_DIR = join(__dirname, "..", "..", "data");
 const COOKIES_PATH = join(DATA_DIR, "yt-cookies.json");
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -92,7 +96,9 @@ async function loadCookies(): Promise<PersistedCookie[]> {
   try {
     const raw = await readFile(COOKIES_PATH, "utf-8");
     const cookies = JSON.parse(raw) as PersistedCookie[];
-    console.log(`[Transcript] [Headless] Loaded ${cookies.length} persisted cookie(s) from ${COOKIES_PATH}`);
+    console.log(
+      `[Transcript] [Headless] Loaded ${cookies.length} persisted cookie(s) from ${COOKIES_PATH}`
+    );
     return cookies;
   } catch {
     // File does not yet exist — that is fine on the first run.
@@ -103,7 +109,9 @@ async function loadCookies(): Promise<PersistedCookie[]> {
 async function saveCookies(cookies: PersistedCookie[]): Promise<void> {
   await mkdir(DATA_DIR, { recursive: true });
   await writeFile(COOKIES_PATH, JSON.stringify(cookies, null, 2), "utf-8");
-  console.log(`[Transcript] [Headless] Persisted ${cookies.length} cookie(s) → ${COOKIES_PATH}`);
+  console.log(
+    `[Transcript] [Headless] Persisted ${cookies.length} cookie(s) → ${COOKIES_PATH}`
+  );
 }
 
 // ─── Main export ──────────────────────────────────────────────────────────────
@@ -118,10 +126,18 @@ async function saveCookies(cookies: PersistedCookie[]): Promise<void> {
 export async function fetchTranscriptViaHeadless(
   videoId: string
 ): Promise<TranscriptSegment[]> {
-  console.log(`[Transcript] [Headless] Launching stealth Chromium for ${videoId}`);
+  console.log(
+    `[Transcript] [Headless] Launching stealth Chromium for ${videoId}`
+  );
 
   const browser = await puppeteerExtra.launch({
     headless: true,
+    // Use the system Chromium when running inside Docker (Alpine).
+    // PUPPETEER_EXECUTABLE_PATH is set in the Dockerfile; locally Puppeteer
+    // falls back to its own bundled Chrome when the variable is absent.
+    ...(process.env.PUPPETEER_EXECUTABLE_PATH
+      ? { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH }
+      : {}),
     args: [
       // Required when running as root (CI / Docker)
       "--no-sandbox",
@@ -159,16 +175,18 @@ export async function fetchTranscriptViaHeadless(
     // like a real Chrome request because it IS a real Chrome request.
 
     let resolveIntercepted!: (data: unknown) => void;
-    let rejectIntercepted!:  (err: Error)   => void;
+    let rejectIntercepted!: (err: Error) => void;
 
     const interceptedPromise = new Promise<unknown>((resolve, reject) => {
       resolveIntercepted = resolve;
-      rejectIntercepted  = reject;
+      rejectIntercepted = reject;
     });
 
     const interceptTimeout = setTimeout(() => {
       rejectIntercepted(
-        new Error("Headless Vector A: no timedtext response intercepted within 15 s")
+        new Error(
+          "Headless Vector A: no timedtext response intercepted within 15 s"
+        )
       );
     }, 15_000);
 
@@ -202,7 +220,9 @@ export async function fetchTranscriptViaHeadless(
     // Navigate to the watch page.  waitUntil: "networkidle2" lets the player
     // fully initialise (including firing the timedtext request) before we
     // proceed.
-    console.log(`[Transcript] [Headless] Navigating to https://www.youtube.com/watch?v=${videoId}`);
+    console.log(
+      `[Transcript] [Headless] Navigating to https://www.youtube.com/watch?v=${videoId}`
+    );
     await page.goto(`https://www.youtube.com/watch?v=${videoId}`, {
       waitUntil: "networkidle2",
       timeout: 30_000,
@@ -216,7 +236,7 @@ export async function fetchTranscriptViaHeadless(
     // ── Try Vector A result ────────────────────────────────────────────────
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const timedText = await interceptedPromise as any;
+      const timedText = (await interceptedPromise) as any;
       const events: Json3Event[] = timedText?.events ?? [];
       const segments = json3ToSegments(events, "en");
 
@@ -224,7 +244,7 @@ export async function fetchTranscriptViaHeadless(
         const charCount = segments.reduce((sum, s) => sum + s.text.length, 0);
         console.log(
           `[Transcript] Success (Headless / Vector A — network interception) for ${videoId}: ` +
-          `${segments.length} segment(s), ~${charCount} chars`
+            `${segments.length} segment(s), ~${charCount} chars`
         );
         return segments;
       }
@@ -233,8 +253,13 @@ export async function fetchTranscriptViaHeadless(
         `[Transcript] [Headless] Vector A: intercepted response had 0 segments — trying Vector B`
       );
     } catch (interceptErr) {
-      const msg = interceptErr instanceof Error ? interceptErr.message : String(interceptErr);
-      console.warn(`[Transcript] [Headless] Vector A failed: ${msg} — trying Vector B`);
+      const msg =
+        interceptErr instanceof Error
+          ? interceptErr.message
+          : String(interceptErr);
+      console.warn(
+        `[Transcript] [Headless] Vector A failed: ${msg} — trying Vector B`
+      );
     }
 
     // ── Vector B: in-page JS eval + in-browser fetch ───────────────────────
@@ -255,15 +280,21 @@ export async function fetchTranscriptViaHeadless(
     // be replayed — i.e. short-lived tokens bound to the session + IP, or
     // DRM-encrypted payloads that require a trusted CDM to decrypt.
 
-    console.log(`[Transcript] [Headless] Vector B: extracting ytInitialPlayerResponse via page.evaluate()`);
+    console.log(
+      `[Transcript] [Headless] Vector B: extracting ytInitialPlayerResponse via page.evaluate()`
+    );
 
     const vectorBResult = await page.evaluate(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pr = (window as any).ytInitialPlayerResponse;
-      if (!pr) return { error: "ytInitialPlayerResponse not found in page context" };
+      if (!pr)
+        return { error: "ytInitialPlayerResponse not found in page context" };
 
-      const tracks: Array<{ baseUrl: string; languageCode: string; kind?: string }> =
-        pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
+      const tracks: Array<{
+        baseUrl: string;
+        languageCode: string;
+        kind?: string;
+      }> = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
 
       if (tracks.length === 0) {
         return { error: "No captionTracks in ytInitialPlayerResponse" };
@@ -291,7 +322,9 @@ export async function fetchTranscriptViaHeadless(
       // No server-side scraper can replicate this without a full browser session.
       const resp = await fetch(timedTextUrl, { credentials: "include" });
       if (!resp.ok) {
-        return { error: `timedtext fetch failed inside browser: HTTP ${resp.status}` };
+        return {
+          error: `timedtext fetch failed inside browser: HTTP ${resp.status}`,
+        };
       }
       const body = await resp.text();
       return { body, lang: track.languageCode };
@@ -303,7 +336,9 @@ export async function fetchTranscriptViaHeadless(
 
     const { body, lang } = vectorBResult as { body: string; lang: string };
     if (!body || body.length === 0) {
-      throw new Error(`Headless Vector B: in-browser fetch returned empty body`);
+      throw new Error(
+        `Headless Vector B: in-browser fetch returned empty body`
+      );
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -312,13 +347,15 @@ export async function fetchTranscriptViaHeadless(
     const segments = json3ToSegments(events, lang);
 
     if (segments.length === 0) {
-      throw new Error(`Headless Vector B: timedtext response yielded no segments for ${videoId}`);
+      throw new Error(
+        `Headless Vector B: timedtext response yielded no segments for ${videoId}`
+      );
     }
 
     const charCount = segments.reduce((sum, s) => sum + s.text.length, 0);
     console.log(
       `[Transcript] Success (Headless / Vector B — in-page JS eval + in-browser fetch) for ${videoId}: ` +
-      `${segments.length} segment(s), ~${charCount} chars`
+        `${segments.length} segment(s), ~${charCount} chars`
     );
     return segments;
   } finally {
