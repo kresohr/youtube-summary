@@ -114,6 +114,83 @@ async function saveCookies(cookies: PersistedCookie[]): Promise<void> {
   );
 }
 
+// ─── Consent helper ───────────────────────────────────────────────────────────
+
+/**
+ * Dismisses YouTube's cookie consent UI if it is visible on the page.
+ *
+ * YouTube shows consent in two layouts:
+ *   1. Redirect to consent.youtube.com  (URL-detectable)
+ *   2. Inline lightbox on the video page (URL stays youtube.com/watch?v=…)
+ *
+ * Both layouts use a button whose aria-label is:
+ *   "Accept the use of cookies and other data for the purposes described"
+ *
+ * We target it by aria-label (most robust) and fall back to text content.
+ * Returns true if a consent button was clicked.
+ */
+async function dismissConsentIfPresent(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  page: any
+): Promise<boolean> {
+  try {
+    // Target the exact aria-label YouTube uses on the Accept button.
+    const ACCEPT_ARIA =
+      "Accept the use of cookies and other data for the purposes described";
+
+    // Check if the button exists within 3 s (fast bail if no consent present).
+    const btn = await page
+      .waitForSelector(`[aria-label="${ACCEPT_ARIA}"]`, { timeout: 3_000 })
+      .catch(() => null);
+
+    if (!btn) {
+      // Fallback: scan all buttons for accept/agree text in case the aria-label
+      // changes in a future YouTube UI update.
+      const clicked = await page.evaluate(() => {
+        const candidates = Array.from(
+          document.querySelectorAll<HTMLElement>("button")
+        );
+        const target = candidates.find((el) => {
+          const label = (el.getAttribute("aria-label") ?? "").toLowerCase();
+          const text = (el.textContent ?? "").toLowerCase().trim();
+          return (
+            label.includes("accept") ||
+            text === "accept all" ||
+            text === "i agree" ||
+            text === "agree"
+          );
+        });
+        if (target) {
+          target.click();
+          return true;
+        }
+        return false;
+      });
+
+      if (!clicked) return false;
+      console.log(
+        `[Transcript] [Headless] Consent dismissed (fallback text match)`
+      );
+    } else {
+      await btn.click();
+      console.log(
+        `[Transcript] [Headless] Consent dismissed (aria-label match)`
+      );
+    }
+
+    // Wait for the overlay / navigation to finish after clicking.
+    await page
+      .waitForNavigation({ waitUntil: "networkidle2", timeout: 10_000 })
+      .catch(() => {
+        // If no full navigation occurs (inline overlay), just wait a beat.
+      });
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ─── Main export ──────────────────────────────────────────────────────────────
 
 /**
@@ -166,18 +243,12 @@ export async function fetchTranscriptViaHeadless(
 
     // ── Vector A: network interception ─────────────────────────────────────
     //
-    // Register the response listener BEFORE navigation so that even if the
-    // timedtext request fires mid-navigation we still capture it.
-    // NOTE: the timer is NOT started here — it starts after navigation
-    // completes, so a slow page-load (e.g. consent redirect) doesn't burn
-    // through the budget before the player even initialises.
-    let resolveIntercepted!: (data: unknown) => void;
-    let rejectIntercepted!: (err: Error) => void;
-
-    const interceptedPromise = new Promise<unknown>((resolve, reject) => {
-      resolveIntercepted = resolve;
-      rejectIntercepted = reject;
-    });
+    // Use a simple mutable variable rather than a one-shot Promise so that
+    // re-navigating after a consent dismiss doesn't leave a stale settled
+    // promise.  The response listener is registered once and stays active for
+    // the lifetime of the page regardless of how many navigations happen.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let capturedTimedText: any = null;
 
     page.on("response", async (response) => {
       const url = response.url();
@@ -190,7 +261,7 @@ export async function fetchTranscriptViaHeadless(
           console.log(
             `[Transcript] [Headless] Vector A: intercepted timedtext response (${body.length} bytes) from ${url.slice(0, 80)}…`
           );
-          resolveIntercepted(json);
+          capturedTimedText = json;
         }
       } catch {
         // non-JSON or stream already consumed — ignore
@@ -198,9 +269,8 @@ export async function fetchTranscriptViaHeadless(
     });
 
     // Navigate to the watch page.
-    // - hl=en&gl=US avoids GDPR consent-wall redirects.
-    // - autoplay=1 tells the player to start immediately, which causes it
-    //   to fire the timedtext request we are intercepting in Vector A.
+    // - hl=en&gl=US: hint to avoid geo-based redirects.
+    // - autoplay=1:  player starts immediately → fires the timedtext request.
     const watchUrl = `https://www.youtube.com/watch?v=${videoId}&hl=en&gl=US&autoplay=1`;
     console.log(`[Transcript] [Headless] Navigating to ${watchUrl}`);
     await page.goto(watchUrl, {
@@ -208,37 +278,27 @@ export async function fetchTranscriptViaHeadless(
       timeout: 45_000,
     });
 
-    // ── Consent-page handling ───────────────────────────────────────────────
+    // ── Consent handling (URL-redirect AND inline overlay) ──────────────────
     //
-    // In some regions Chromium is redirected to consent.youtube.com before
-    // reaching the video. Detect this and accept, then re-navigate.
-    const landedUrl = page.url();
-    if (landedUrl.includes("consent.youtube.com") || landedUrl.includes("/consent")) {
-      console.log(`[Transcript] [Headless] Consent page detected (${landedUrl}), accepting…`);
-      try {
-        // New Google consent UI: a <form> with a "Accept all" button.
-        await page.waitForSelector('button, input[type="submit"]', { timeout: 5_000 });
-        await page.evaluate(() => {
-          const candidates = Array.from(
-            document.querySelectorAll<HTMLElement>('button, input[type="submit"]')
-          );
-          const accept = candidates.find((el) => {
-            const t = el.textContent?.toLowerCase() ?? "";
-            return (
-              t.includes("accept") ||
-              t.includes("agree") ||
-              t.includes("i agree") ||
-              t.includes("accept all")
-            );
-          });
-          if (accept) accept.click();
-        });
-        await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15_000 }).catch(() => {});
-      } catch {
-        console.warn(`[Transcript] [Headless] Could not dismiss consent page automatically`);
-      }
-
-      // Re-navigate to the actual video after consent
+    // YouTube shows consent in two ways depending on region / session state:
+    //   1. Redirect to consent.youtube.com  → detectable via page.url()
+    //   2. Inline lightbox overlay ON the video page → URL stays unchanged
+    //
+    // We handle both by first checking the URL and then ALWAYS scanning the
+    // DOM for the "Accept all" button using its exact aria-label from YouTube's
+    // markup: aria-label="Accept the use of cookies and other data for the
+    // purposes described"
+    //
+    // After dismissing we re-navigate so the player loads cleanly without the
+    // overlay blocking it.
+    const consentAccepted = await dismissConsentIfPresent(page);
+    if (consentAccepted) {
+      console.log(
+        `[Transcript] [Headless] Consent dismissed — re-navigating to video…`
+      );
+      // Reset any timedtext captured from the consent page (there won't be any
+      // but reset for clarity).
+      capturedTimedText = null;
       await page.goto(watchUrl, { waitUntil: "networkidle2", timeout: 45_000 });
     }
 
@@ -246,25 +306,35 @@ export async function fetchTranscriptViaHeadless(
     const currentCookies = await page.cookies();
     await saveCookies(currentCookies as PersistedCookie[]);
 
-    // Log where we actually landed for debugging
-    console.log(`[Transcript] [Headless] Landed on: ${page.url()} (title: "${await page.title()}")`);
+    console.log(
+      `[Transcript] [Headless] Landed on: ${page.url()} (title: "${await page.title()}")`
+    );
 
     // ── Try Vector A result (short post-navigation window) ──────────────────
     //
-    // Start a SHORT timer now that navigation is done.  If the timedtext
-    // request already fired during page load, interceptedPromise is already
-    // resolved and this races to zero.  We give it an extra 8 s in case the
-    // player initialises with a brief delay after networkidle2.
-    const postNavTimeout = new Promise<never>((_, reject) =>
-      setTimeout(
-        () => reject(new Error("Headless Vector A: no timedtext response intercepted within 8 s post-navigation")),
-        8_000
-      )
-    );
+    // Poll for up to 8 s to give the player time to fire the timedtext request
+    // after networkidle2.  If it already fired during page load the first
+    // iteration wins immediately.
+    if (capturedTimedText === null) {
+      await new Promise<void>((resolve) => {
+        const deadline = Date.now() + 8_000;
+        const poll = setInterval(() => {
+          if (capturedTimedText !== null || Date.now() >= deadline) {
+            clearInterval(poll);
+            resolve();
+          }
+        }, 200);
+      });
+    }
 
     try {
+      if (capturedTimedText === null) {
+        throw new Error(
+          "Headless Vector A: no timedtext response intercepted within 8 s post-navigation"
+        );
+      }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const timedText = (await Promise.race([interceptedPromise, postNavTimeout])) as any;
+      const timedText = capturedTimedText as any;
       const events: Json3Event[] = timedText?.events ?? [];
       const segments = json3ToSegments(events, "en");
 
@@ -331,7 +401,8 @@ export async function fetchTranscriptViaHeadless(
       if (!pr) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const raw = (window as any).ytInitialPlayerResponse;
-        if (!raw) return { error: "ytInitialPlayerResponse not found in page context" };
+        if (!raw)
+          return { error: "ytInitialPlayerResponse not found in page context" };
         return { error: "No captionTracks in ytInitialPlayerResponse" };
       }
 
