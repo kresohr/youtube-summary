@@ -8,24 +8,36 @@
  * the two server-side methods (HTML scraper + InnerTube API) are blocked by
  * bot mitigation.
  *
- * Two extraction vectors are demonstrated in sequence:
+ * Four extraction vectors are attempted in sequence:
  *
- *   Vector A — Network interception
+ *   Vector A — Network interception (timedtext)
  *     A `page.on("response")` listener is registered before navigation.
  *     When the YouTube player fires the JSON3 timedtext CDN request as part of
  *     its normal initialisation, we capture the raw response body directly.
  *     This shows that even short-lived, signed CDN URLs are captured by any
  *     observer sitting between the browser and the network.
  *
+ *   Vector A2 — Network interception (youtubei/v1/next)
+ *     The same response listener also watches for `youtubei/v1/next` responses
+ *     which are fired on every page navigation and contain a full
+ *     `playerResponse` with `captionTracks`.  The caption URL is extracted and
+ *     fetched from inside the browser (with credentials) when Vector A yields
+ *     no result from playback.
+ *
  *   Vector B — In-page JS eval + in-browser fetch  (fallback)
- *     If no timedtext response is intercepted within 15 s, we call
- *     `page.evaluate()` to run code *inside* the browser's V8 engine.
- *     From there we read `window.ytInitialPlayerResponse` (the same data the
- *     player uses internally), pick the best caption track, and call the
- *     browser's own `fetch()` with `credentials: "include"`.  Because this
+ *     If no timedtext response is intercepted, we call `page.evaluate()` to
+ *     run code *inside* the browser's V8 engine.  From there we read
+ *     `window.ytInitialPlayerResponse`, pick the best caption track, and call
+ *     the browser's own `fetch()` with `credentials: "include"`.  Because this
  *     fetch originates from inside the browser, it carries the full session
  *     cookie jar automatically — making it indistinguishable from a real user
  *     clicking the captions button.
+ *
+ *   Vector C — DOM interaction  (last resort)
+ *     Clicks the "…more" description expander, then the "Show transcript"
+ *     button, waits for `ytd-transcript-segment-renderer` rows to appear, and
+ *     extracts the plain text from each row.  Timestamps are captured but
+ *     duration is recorded as 0.
  *
  * HOW TO PREVENT THIS ON YOUR OWN STREAMING SERVICE
  * --------------------------------------------------
@@ -241,30 +253,82 @@ export async function fetchTranscriptViaHeadless(
       await page.setCookie(...(savedCookies as any[]));
     }
 
-    // ── Vector A: network interception ─────────────────────────────────────
+    // ── Vectors A / A2: network interception ───────────────────────────────
     //
-    // Use a simple mutable variable rather than a one-shot Promise so that
-    // re-navigating after a consent dismiss doesn't leave a stale settled
-    // promise.  The response listener is registered once and stays active for
+    // Use simple mutable variables rather than one-shot Promises so that
+    // re-navigating after a consent dismiss doesn't leave stale settled
+    // promises.  The response listener is registered once and stays active for
     // the lifetime of the page regardless of how many navigations happen.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let capturedTimedText: any = null;
+    let capturedNextCaptionUrl: string | null = null;
+    let capturedNextCaptionLang = "en";
 
     page.on("response", async (response) => {
       const url = response.url();
-      if (!url.includes("timedtext")) return;
-      try {
-        const body = await response.text();
-        if (body.length < 10) return;
-        const json = JSON.parse(body);
-        if (Array.isArray(json.events)) {
-          console.log(
-            `[Transcript] [Headless] Vector A: intercepted timedtext response (${body.length} bytes) from ${url.slice(0, 80)}…`
-          );
-          capturedTimedText = json;
+
+      // Vector A: intercept the JSON3 timedtext CDN response from playback
+      if (url.includes("timedtext")) {
+        try {
+          const body = await response.text();
+          if (body.length < 10) return;
+          const json = JSON.parse(body);
+          if (Array.isArray(json.events)) {
+            console.log(
+              `[Transcript] [Headless] Vector A: intercepted timedtext response (${body.length} bytes) from ${url.slice(0, 80)}…`
+            );
+            capturedTimedText = json;
+          }
+        } catch {
+          // non-JSON or stream already consumed — ignore
         }
-      } catch {
-        // non-JSON or stream already consumed — ignore
+        return;
+      }
+
+      // Vector A2: extract caption track URL from youtubei/v1/next (fires on
+      // every navigation, no autoplay required).
+      if (url.includes("youtubei/v1/next") && capturedNextCaptionUrl === null) {
+        try {
+          const body = await response.text();
+          if (body.length < 10) return;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const json = JSON.parse(body) as any;
+          // Caption tracks can appear at the top-level playerResponse or
+          // nested inside frameworkUpdates mutations.
+          const playerResponse =
+            json?.playerResponse ??
+            json?.frameworkUpdates?.entityBatchUpdate?.mutations?.[0]?.payload
+              ?.playerResponse;
+          const tracks: Array<{
+            baseUrl: string;
+            languageCode: string;
+            kind?: string;
+          }> =
+            playerResponse?.captions?.playerCaptionsTracklistRenderer
+              ?.captionTracks ?? [];
+          if (tracks.length > 0) {
+            // Rank: manual captions first, English preferred
+            const sorted = [...tracks].sort((a, b) => {
+              const am = a.kind !== "asr" ? 0 : 1;
+              const bm = b.kind !== "asr" ? 0 : 1;
+              if (am !== bm) return am - bm;
+              const ae = a.languageCode?.startsWith("en") ? 0 : 1;
+              const be = b.languageCode?.startsWith("en") ? 0 : 1;
+              return ae - be;
+            });
+            const track = sorted[0];
+            const rawUrl = track.baseUrl.replace(/&amp;/g, "&");
+            capturedNextCaptionUrl = rawUrl.includes("fmt=")
+              ? rawUrl.replace(/fmt=[^&]*/, "fmt=json3")
+              : `${rawUrl}&fmt=json3`;
+            capturedNextCaptionLang = track.languageCode;
+            console.log(
+              `[Transcript] [Headless] Vector A2: got captionTrack URL from youtubei/v1/next (lang: ${track.languageCode})`
+            );
+          }
+        } catch {
+          // parse error — ignore
+        }
       }
     });
 
@@ -299,6 +363,8 @@ export async function fetchTranscriptViaHeadless(
       // Reset any timedtext captured from the consent page (there won't be any
       // but reset for clarity).
       capturedTimedText = null;
+      capturedNextCaptionUrl = null;
+      capturedNextCaptionLang = "en";
       await page.goto(watchUrl, { waitUntil: "networkidle2", timeout: 45_000 });
     }
 
@@ -375,7 +441,7 @@ export async function fetchTranscriptViaHeadless(
       }
 
       console.warn(
-        `[Transcript] [Headless] Vector A: intercepted response had 0 segments — trying Vector B`
+        `[Transcript] [Headless] Vector A: intercepted response had 0 segments — trying Vector A2`
       );
     } catch (interceptErr) {
       const msg =
@@ -383,7 +449,66 @@ export async function fetchTranscriptViaHeadless(
           ? interceptErr.message
           : String(interceptErr);
       console.warn(
-        `[Transcript] [Headless] Vector A failed: ${msg} — trying Vector B`
+        `[Transcript] [Headless] Vector A failed: ${msg} — trying Vector A2`
+      );
+    }
+
+    // ── Vector A2: in-browser fetch of caption URL from /next response ───────
+    //
+    // If the timedtext CDN request was never fired (autoplay blocked), but the
+    // navigation itself returned a /next response with captionTracks, we can
+    // still fetch the timed-text by issuing the request from inside the
+    // browser (with credentials: "include") using the URL we extracted above.
+    if (capturedNextCaptionUrl !== null) {
+      console.log(
+        `[Transcript] [Headless] Vector A2: fetching timedtext using URL from /next response…`
+      );
+      try {
+        const vectorA2Result = await page.evaluate(
+          async (
+            timedTextUrl: string
+          ): Promise<{ body: string } | { error: string }> => {
+            const resp = await fetch(timedTextUrl, { credentials: "include" });
+            if (!resp.ok) return { error: `HTTP ${resp.status}` };
+            const body = await resp.text();
+            if (body.length === 0) return { error: "empty body" };
+            return { body };
+          },
+          capturedNextCaptionUrl
+        );
+        if ("body" in vectorA2Result) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const timedText = JSON.parse(vectorA2Result.body) as any;
+          const events: Json3Event[] = timedText?.events ?? [];
+          const segments = json3ToSegments(events, capturedNextCaptionLang);
+          if (segments.length > 0) {
+            const charCount = segments.reduce(
+              (sum, s) => sum + s.text.length,
+              0
+            );
+            console.log(
+              `[Transcript] Success (Headless / Vector A2 — youtubei/v1/next) for ${videoId}: ` +
+                `${segments.length} segment(s), ~${charCount} chars`
+            );
+            return segments;
+          }
+        } else {
+          console.warn(
+            `[Transcript] [Headless] Vector A2 fetch failed: ${
+              (vectorA2Result as { error: string }).error
+            }`
+          );
+        }
+      } catch (a2Err) {
+        console.warn(
+          `[Transcript] [Headless] Vector A2 failed: ${
+            a2Err instanceof Error ? a2Err.message : String(a2Err)
+          }`
+        );
+      }
+    } else {
+      console.warn(
+        `[Transcript] [Headless] Vector A2 skipped: no caption URL captured from /next responses`
       );
     }
 
@@ -496,6 +621,7 @@ export async function fetchTranscriptViaHeadless(
       return { body, lang: track.languageCode };
     });
 
+    let vectorBErrorMsg: string | null = null;
     if ("error" in vectorBResult) {
       const msg = (vectorBResult as { error: string; loginRequired?: boolean })
         .error;
@@ -508,33 +634,117 @@ export async function fetchTranscriptViaHeadless(
           `Headless Vector B: bot-detection/LOGIN_REQUIRED — ${msg}`
         );
       }
-      throw new Error(`Headless Vector B: ${msg}`);
+      vectorBErrorMsg = msg;
+    } else {
+      const { body, lang } = vectorBResult as { body: string; lang: string };
+      if (!body || body.length === 0) {
+        vectorBErrorMsg = "in-browser fetch returned empty body";
+      } else {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const timedText = JSON.parse(body) as any;
+        const events: Json3Event[] = timedText?.events ?? [];
+        const segments = json3ToSegments(events, lang);
+        if (segments.length === 0) {
+          vectorBErrorMsg = `timedtext response yielded no segments for ${videoId}`;
+        } else {
+          const charCount = segments.reduce((sum, s) => sum + s.text.length, 0);
+          console.log(
+            `[Transcript] Success (Headless / Vector B — in-page JS eval + in-browser fetch) for ${videoId}: ` +
+              `${segments.length} segment(s), ~${charCount} chars`
+          );
+          return segments;
+        }
+      }
     }
 
-    const { body, lang } = vectorBResult as { body: string; lang: string };
-    if (!body || body.length === 0) {
-      throw new Error(
-        `Headless Vector B: in-browser fetch returned empty body`
+    if (vectorBErrorMsg) {
+      console.warn(
+        `[Transcript] [Headless] Vector B failed: ${vectorBErrorMsg} — trying Vector C`
       );
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const timedText = JSON.parse(body) as any;
-    const events: Json3Event[] = timedText?.events ?? [];
-    const segments = json3ToSegments(events, lang);
-
-    if (segments.length === 0) {
-      throw new Error(
-        `Headless Vector B: timedtext response yielded no segments for ${videoId}`
-      );
-    }
-
-    const charCount = segments.reduce((sum, s) => sum + s.text.length, 0);
+    // ── Vector C: DOM interaction — click “Show transcript” ────────────────────
+    //
+    // Last resort: mimic a user opening the transcript panel in the YouTube UI.
+    //   1. Expand the video description (“…more” button).
+    //   2. Click “Show transcript” inside the expanded description.
+    //   3. Wait for ytd-transcript-segment-renderer rows to render.
+    //   4. Extract the timestamp + text from each row.
+    //
+    // Duration is not available from the UI so it is recorded as 0.
     console.log(
-      `[Transcript] Success (Headless / Vector B — in-page JS eval + in-browser fetch) for ${videoId}: ` +
-        `${segments.length} segment(s), ~${charCount} chars`
+      `[Transcript] [Headless] Vector C: clicking "Show transcript" in description`
     );
-    return segments;
+    try {
+      // Step 1: Expand the description (the “…more” / #expand button)
+      try {
+        await page.waitForSelector(
+          "tp-yt-paper-button#expand, ytd-text-inline-expander #expand",
+          { timeout: 5_000 }
+        );
+        await page.click(
+          "tp-yt-paper-button#expand, ytd-text-inline-expander #expand"
+        );
+      } catch {
+        // Expander may already be visible or absent — continue
+      }
+
+      // Step 2: Click the "Show transcript" button in the expanded description
+      await page.waitForSelector(
+        "ytd-video-description-transcript-section-renderer button",
+        { timeout: 6_000 }
+      );
+      await page.click(
+        "ytd-video-description-transcript-section-renderer button"
+      );
+
+      // Step 3: Wait for transcript segment rows to appear in the panel
+      await page.waitForSelector("ytd-transcript-segment-renderer", {
+        timeout: 10_000,
+      });
+
+      // Step 4: Extract timestamp + text from every segment row
+      const rawSegments = await page.evaluate(() => {
+        const rows = Array.from(
+          document.querySelectorAll("ytd-transcript-segment-renderer")
+        );
+        return rows.map((row) => {
+          const tsEl = row.querySelector("[class*='timestamp']");
+          const textEl = row.querySelector("[class*='segment-text']") ?? row;
+          const tsText = tsEl?.textContent?.trim() ?? "";
+          let offset = 0;
+          const parts = tsText.split(":").map(Number);
+          if (parts.length === 2) offset = parts[0] * 60 + parts[1];
+          else if (parts.length === 3)
+            offset = parts[0] * 3600 + parts[1] * 60 + parts[2];
+          return { text: textEl.textContent?.trim() ?? "", offset };
+        });
+      });
+
+      const segments: TranscriptSegment[] = rawSegments
+        .filter((s) => s.text.length > 0)
+        .map((s) => ({
+          text: s.text,
+          offset: s.offset,
+          duration: 0,
+          lang: "en",
+        }));
+
+      if (segments.length === 0) {
+        throw new Error("no segment text found in DOM");
+      }
+
+      const charCount = segments.reduce((sum, s) => sum + s.text.length, 0);
+      console.log(
+        `[Transcript] Success (Headless / Vector C — DOM interaction) for ${videoId}: ` +
+          `${segments.length} segment(s), ~${charCount} chars`
+      );
+      return segments;
+    } catch (vectorCErr) {
+      const msg =
+        vectorCErr instanceof Error ? vectorCErr.message : String(vectorCErr);
+      throw new Error(`Headless Vector C: ${msg}`);
+    }
   } finally {
     // Always close the browser — even on error — to avoid zombie Chromium processes
     await browser.close();

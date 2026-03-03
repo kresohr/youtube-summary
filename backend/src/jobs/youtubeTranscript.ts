@@ -268,19 +268,6 @@ const INNERTUBE_CLIENTS = [
     userAgent: USER_AGENT,
     extraContext: {},
   },
-  {
-    // Simplified embedded TV player — separate bot-mitigation tier, has been
-    // observed to bypass some age-restriction checks that the standard
-    // TVHTML5 client hits when running from datacenter IPs.
-    clientName: "TVHTML5_SIMPLY_EMBEDDED_PLAYER" as const,
-    clientVersion: "2.0",
-    userAgent:
-      "Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1",
-    extraContext: {},
-    // embedUrl goes in context.thirdParty — required for the embedded
-    // player client to unlock age-restricted content.
-    thirdParty: { embedUrl: "https://www.youtube.com/" },
-  },
 ];
 
 /**
@@ -323,11 +310,6 @@ async function fetchTranscriptViaInnerTube(
                   gl: "US",
                   ...client.extraContext,
                 },
-                // Some clients (e.g. TVHTML5_SIMPLY_EMBEDDED_PLAYER) require
-                // a thirdParty context block to unlock age-gated content.
-                ...("thirdParty" in client && client.thirdParty
-                  ? { thirdParty: client.thirdParty }
-                  : {}),
               },
             }),
           }
