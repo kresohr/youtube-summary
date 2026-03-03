@@ -226,7 +226,10 @@ const ANDROID_USER_AGENT =
  * IOS is tried first — it reliably returns captions and timedtext data
  * even from datacenter IPs where WEB clients return UNPLAYABLE.
  * ANDROID is tried second (also works from datacenter IPs).
- * WEB clients are intentionally excluded — they return UNPLAYABLE/ERROR
+ * TVHTML5 is tried third — the Smart TV client skips many bot-mitigation
+ * checks that apply to browser/mobile clients.
+ * WEB_EMBEDDED_PLAYER is a last resort — sometimes passes where others fail.
+ * Plain WEB clients are intentionally excluded — they return UNPLAYABLE/ERROR
  * from non-residential server IPs.
  */
 const INNERTUBE_CLIENTS = [
@@ -242,6 +245,21 @@ const INNERTUBE_CLIENTS = [
     clientVersion: "19.44.38",
     userAgent: ANDROID_USER_AGENT,
     extraContext: { androidSdkVersion: 34, platform: "MOBILE" },
+  },
+  {
+    // Smart TV client — different bot-mitigation tier than mobile/browser
+    clientName: "TVHTML5" as const,
+    clientVersion: "7.20241201.19.00",
+    userAgent:
+      "Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1",
+    extraContext: {},
+  },
+  {
+    // Embedded player context — different fingerprint from the full watch page
+    clientName: "WEB_EMBEDDED_PLAYER" as const,
+    clientVersion: "2.20241201.00.00",
+    userAgent: USER_AGENT,
+    extraContext: {},
   },
 ];
 
@@ -306,6 +324,24 @@ async function fetchTranscriptViaInnerTube(
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const playerBody = (await playerResp.json()) as any;
+
+        // Detect YouTube bot-mitigation responses early so the error message
+        // is actionable rather than a generic "no caption tracks" message.
+        const playabilityStatus: string | undefined =
+          playerBody?.playabilityStatus?.status;
+        const playabilityReason: string | undefined =
+          playerBody?.playabilityStatus?.reason;
+        if (
+          playabilityStatus === "LOGIN_REQUIRED" ||
+          playabilityStatus === "UNPLAYABLE" ||
+          playabilityStatus === "ERROR"
+        ) {
+          const reason = playabilityReason ?? playabilityStatus;
+          throw new Error(
+            `InnerTube ${client.clientName}: playabilityStatus=${playabilityStatus} — ${reason}`
+          );
+        }
+
         const captionTracks: CaptionTrack[] | undefined =
           playerBody?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
@@ -445,15 +481,21 @@ export const transcribeVideo = async (
   //
   // Dynamic import avoids a circular module dependency at load time, since
   // headlessBrowser.ts itself imports helpers from this module.
-  console.warn(`[Transcript] Trying headless browser (stealth Chromium) for ${videoId}...`);
+  console.warn(
+    `[Transcript] Trying headless browser (stealth Chromium) for ${videoId}...`
+  );
   try {
     const { fetchTranscriptViaHeadless } = await import("./headlessBrowser.js");
     const segments = await fetchTranscriptViaHeadless(videoId);
     return segments;
   } catch (headlessError) {
     const errMsg =
-      headlessError instanceof Error ? headlessError.message : String(headlessError);
-    console.warn(`[Transcript] Headless browser failed for ${videoId}: ${errMsg}`);
+      headlessError instanceof Error
+        ? headlessError.message
+        : String(headlessError);
+    console.warn(
+      `[Transcript] Headless browser failed for ${videoId}: ${errMsg}`
+    );
     errors.push(`headless: ${errMsg}`);
   }
 

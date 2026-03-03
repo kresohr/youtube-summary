@@ -430,6 +430,25 @@ export async function fetchTranscriptViaHeadless(
         const raw = (window as any).ytInitialPlayerResponse;
         if (!raw)
           return { error: "ytInitialPlayerResponse not found in page context" };
+
+        // Detect bot-mitigation / age-gate before reporting a generic error.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const status: string | undefined = (raw as any)?.playabilityStatus
+          ?.status;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const reason: string | undefined = (raw as any)?.playabilityStatus
+          ?.reason;
+        if (
+          status === "LOGIN_REQUIRED" ||
+          status === "UNPLAYABLE" ||
+          status === "ERROR"
+        ) {
+          return {
+            error: `playabilityStatus=${status}${reason ? ` — ${reason}` : ""}`,
+            loginRequired: status === "LOGIN_REQUIRED",
+          };
+        }
+
         // Log the captions sub-tree so we can debug what YouTube actually
         // returned — useful when the player bootstrap differs by region/session.
         const captionsDebug = JSON.stringify(
@@ -478,7 +497,18 @@ export async function fetchTranscriptViaHeadless(
     });
 
     if ("error" in vectorBResult) {
-      throw new Error(`Headless Vector B: ${vectorBResult.error}`);
+      const msg = (vectorBResult as { error: string; loginRequired?: boolean })
+        .error;
+      const isLoginRequired =
+        (vectorBResult as { loginRequired?: boolean }).loginRequired === true;
+      if (isLoginRequired) {
+        // YouTube is actively blocking this session — no point retrying with
+        // a different vector.  Surface a concise, actionable error.
+        throw new Error(
+          `Headless Vector B: bot-detection/LOGIN_REQUIRED — ${msg}`
+        );
+      }
+      throw new Error(`Headless Vector B: ${msg}`);
     }
 
     const { body, lang } = vectorBResult as { body: string; lang: string };
