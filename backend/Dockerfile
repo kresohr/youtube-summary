@@ -36,6 +36,11 @@ RUN npm run build
 
 COPY init.sql ./init.sql
 
+# Create the data directory that holds cookies.txt and yt-cookies.json.
+# This dir is bind-mounted from the host in docker-compose, but must exist
+# in the image for standalone `docker run` use as well.
+RUN mkdir -p /app/data
+
 # 3. Secure the application
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 RUN chown -R appuser:appgroup /app

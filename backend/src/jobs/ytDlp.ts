@@ -35,7 +35,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readdir, readFile, writeFile, unlink } from "node:fs/promises";
+import { readdir, readFile, writeFile, unlink, access } from "node:fs/promises";
 import { join } from "node:path";
 import {
   json3ToSegments,
@@ -48,18 +48,35 @@ const execFileAsync = promisify(execFile);
 // ─── Cookie helpers ───────────────────────────────────────────────────────────
 
 /**
- * Path to the Puppeteer cookie store written by headlessBrowser.ts.
- * Resolved relative to this file: backend/src/jobs → ../../data = backend/data.
+ * Base data directory — backend/data/ at source, /app/data/ inside Docker.
+ * Resolved as: dist/jobs/../../data → /app/data (or <project>/backend/data).
  */
-const COOKIES_JSON_PATH = join(
-  __dirname,
-  "..",
-  "..",
-  "data",
-  "yt-cookies.json"
-);
+const DATA_DIR = join(__dirname, "..", "..", "data");
 
-/** Temp file where the Netscape-format cookies are written for yt-dlp. */
+/**
+ * Path to the Puppeteer cookie store written by headlessBrowser.ts.
+ */
+const COOKIES_JSON_PATH = join(DATA_DIR, "yt-cookies.json");
+
+/**
+ * Drop a Netscape-format cookies.txt here (or set YTDLP_COOKIES_FILE to its
+ * path) to have yt-dlp authenticate with your YouTube account.  This is the
+ * recommended approach on headless Linux / Docker servers where
+ * --cookies-from-browser is not available.
+ *
+ * Export steps (one time, on your local machine):
+ *   1. Log in to YouTube in Chrome.
+ *   2. Install "Get cookies.txt LOCALLY" extension.
+ *   3. Visit youtube.com, export → cookies.txt.
+ *   4. Copy the file to backend/data/cookies.txt and (re)deploy.
+ *
+ * Or use yt-dlp on a machine with Chrome installed:
+ *   yt-dlp --cookies-from-browser chrome --cookies /path/to/cookies.txt
+ */
+const STATIC_COOKIES_PATH =
+  process.env.YTDLP_COOKIES_FILE ?? join(DATA_DIR, "cookies.txt");
+
+/** Temp file where the Puppeteer-JSON-converted Netscape cookies are written. */
 const NETSCAPE_COOKIES_PATH = join("/tmp", "yt-dlp-cookies.txt");
 
 interface PuppeteerCookie {
@@ -119,6 +136,44 @@ async function buildNetscapeCookiesFile(): Promise<string | null> {
   return NETSCAPE_COOKIES_PATH;
 }
 
+/**
+ * Resolve the best available cookie source for yt-dlp, in priority order:
+ *
+ *  1. YTDLP_COOKIES_FILE env var (or backend/data/cookies.txt) — a static
+ *     Netscape cookies.txt exported from a real browser.  This is the most
+ *     reliable source on headless servers / Docker because it contains a live
+ *     authenticated YouTube session.
+ *
+ *  2. Puppeteer JSON → Netscape conversion (yt-cookies.json written by
+ *     headlessBrowser.ts).  Used when no static file is present.
+ *
+ *  3. null — no cookies; yt-dlp will attempt an unauthenticated request.
+ */
+async function resolveYtDlpCookiesArg(): Promise<{
+  args: string[];
+  source: string | null;
+}> {
+  // 1. Static / env-var cookies file (pre-exported Netscape format)
+  try {
+    await access(STATIC_COOKIES_PATH);
+    return {
+      args: ["--cookies", STATIC_COOKIES_PATH],
+      source: STATIC_COOKIES_PATH,
+    };
+  } catch {
+    // file does not exist — fall through
+  }
+
+  // 2. Puppeteer JSON converted on the fly
+  const converted = await buildNetscapeCookiesFile();
+  if (converted) {
+    return { args: ["--cookies", converted], source: COOKIES_JSON_PATH };
+  }
+
+  // 3. No cookies available
+  return { args: [], source: null };
+}
+
 /** Absolute path prefix for temp subtitle files (/tmp/yt-dlp-<videoId>.*). */
 function tempPrefix(videoId: string): string {
   return join("/tmp", `yt-dlp-${videoId}`);
@@ -153,15 +208,15 @@ export async function fetchTranscriptViaYtDlp(
 
   console.log(`[Transcript] [yt-dlp] Fetching subtitles for ${videoId}…`);
 
-  // Attempt to pass the headless browser's persisted cookies to yt-dlp.
-  // This bypasses YouTube's bot-detection for sessions that have previously
-  // completed a consent flow inside the stealth Chromium instance.
-  const cookiesArgs: string[] = [];
-  const cookiesFile = await buildNetscapeCookiesFile();
-  if (cookiesFile) {
-    cookiesArgs.push("--cookies", cookiesFile);
+  // Resolve the best cookie source available (static file > Puppeteer JSON > none).
+  const { args: cookiesArgs, source: cookieSource } =
+    await resolveYtDlpCookiesArg();
+  if (cookieSource) {
+    console.log(`[Transcript] [yt-dlp] Passing cookies from ${cookieSource}`);
+  } else {
     console.log(
-      `[Transcript] [yt-dlp] Passing cookies from ${COOKIES_JSON_PATH}`
+      `[Transcript] [yt-dlp] No cookies found — unauthenticated request` +
+        ` (place a Netscape cookies.txt at ${STATIC_COOKIES_PATH} to authenticate)`
     );
   }
 
