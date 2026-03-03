@@ -52,33 +52,125 @@ async function fetchVideoMetadata(
   videoId: string
 ): Promise<{ title: string; thumbnail: string; publishedAt: string } | null> {
   const apiKey = process.env.YOUTUBE_API_KEY;
-  if (!apiKey) {
-    console.error("YOUTUBE_API_KEY is not set");
-    return null;
+
+  if (apiKey) {
+    try {
+      const url = new URL("https://www.googleapis.com/youtube/v3/videos");
+      url.searchParams.set("part", "snippet");
+      url.searchParams.set("id", videoId);
+      url.searchParams.set("key", apiKey);
+
+      const response = await fetch(url.toString());
+      if (response.ok) {
+        const data = await response.json();
+        if (data.items && data.items.length > 0) {
+          const snippet: VideoSnippet = data.items[0].snippet;
+          return {
+            title: snippet.title,
+            thumbnail:
+              snippet.thumbnails.high?.url ??
+              snippet.thumbnails.default?.url ??
+              "",
+            publishedAt: snippet.publishedAt,
+          };
+        }
+      } else {
+        const errText = await response
+          .text()
+          .catch(() => response.status.toString());
+        console.warn(
+          `[SingleVideo] YouTube Data API failed (HTTP ${response.status}) for ${videoId} — falling back to page scrape. ${errText.slice(0, 200)}`
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `[SingleVideo] YouTube Data API threw for ${videoId} — falling back to page scrape:`,
+        error
+      );
+    }
+  } else {
+    console.warn(
+      "[SingleVideo] YOUTUBE_API_KEY not set — using page scrape for metadata"
+    );
   }
 
-  const url = new URL("https://www.googleapis.com/youtube/v3/videos");
-  url.searchParams.set("part", "snippet");
-  url.searchParams.set("id", videoId);
-  url.searchParams.set("key", apiKey);
+  // ── Quota-free fallback: scrape Open Graph tags from the watch page ───────
+  //
+  // YouTube embeds og:title, og:image and datePublished (as a JSON-LD script)
+  // in every public watch page.  No API key or quota required.
+  return fetchVideoMetadataFromPage(videoId);
+}
 
+/**
+ * Scrape video metadata from the YouTube watch page using Open Graph tags
+ * and JSON-LD structured data.  Uses zero YouTube Data API quota.
+ */
+async function fetchVideoMetadataFromPage(
+  videoId: string
+): Promise<{ title: string; thumbnail: string; publishedAt: string } | null> {
   try {
-    const response = await fetch(url.toString());
-    if (!response.ok) return null;
-    const data = await response.json();
-    if (!data.items || data.items.length === 0) return null;
+    console.log(
+      `[SingleVideo] Scraping metadata for ${videoId} from watch page…`
+    );
+    const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
 
-    const snippet: VideoSnippet = data.items[0].snippet;
-    return {
-      title: snippet.title,
-      thumbnail:
-        snippet.thumbnails.high?.url ?? snippet.thumbnails.default?.url ?? "",
-      publishedAt: snippet.publishedAt,
-    };
+    if (!res.ok) {
+      console.error(
+        `[SingleVideo] Watch page returned HTTP ${res.status} for ${videoId}`
+      );
+      return null;
+    }
+
+    const html = await res.text();
+
+    // og:title  →  <meta property="og:title" content="…">
+    const titleMatch =
+      html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/i) ??
+      html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:title"/i);
+    const title = titleMatch
+      ? decodeHtmlEntities(titleMatch[1])
+      : `Video ${videoId}`;
+
+    // og:image  →  <meta property="og:image" content="…">
+    const thumbMatch =
+      html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/i) ??
+      html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/i);
+    const thumbnail = thumbMatch
+      ? thumbMatch[1]
+      : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+    // datePublished from JSON-LD  →  "datePublished":"2024-05-01"
+    const dateMatch = html.match(/"datePublished"\s*:\s*"([^"]+)"/);
+    const publishedAt = dateMatch
+      ? new Date(dateMatch[1]).toISOString()
+      : new Date().toISOString();
+
+    console.log(
+      `[SingleVideo] Page scrape succeeded for ${videoId}: "${title}"`
+    );
+    return { title, thumbnail, publishedAt };
   } catch (error) {
-    console.error("Error fetching video metadata:", error);
+    console.error(`[SingleVideo] Page scrape failed for ${videoId}:`, error);
     return null;
   }
+}
+
+/** Decode common HTML entities in scraped attribute values. */
+function decodeHtmlEntities(str: string): string {
+  return str
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'");
 }
 
 /** Process a single video: transcript → summary → DB insert */
