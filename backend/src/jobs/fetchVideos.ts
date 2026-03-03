@@ -1,5 +1,5 @@
 import { query } from "../lib/db.js";
-import { transcribeVideo } from "./youtubeTranscript.js";
+import { transcribeVideo, LoginRequiredError } from "./youtubeTranscript.js";
 
 interface YouTubeVideoItem {
   id: { videoId: string };
@@ -166,6 +166,9 @@ export async function getTranscriptFromYouTube(
     console.error(
       `[GetTranscript] FAILED for ${videoId} [${errName}]: ${errMsg}`
     );
+    // Re-throw login-required errors so callers can surface a clear message
+    // instead of silently treating this as "no transcript available".
+    if (error instanceof LoginRequiredError) throw error;
     return null;
   }
 }
@@ -278,7 +281,22 @@ async function processPendingVideos(): Promise<void> {
       console.log(
         `[Pending] Attempting transcript for "${row.title}" (${row.video_id}), retry_count=${row.retry_count}`
       );
-      const transcript = await getTranscriptFromYouTube(row.video_id);
+      let transcript: string | null = null;
+      try {
+        transcript = await getTranscriptFromYouTube(row.video_id);
+      } catch (transcriptError) {
+        if (transcriptError instanceof LoginRequiredError) {
+          // Sign-in-gated — retrying will never help; discard immediately.
+          console.warn(
+            `[Pending] Discarding login-required video "${row.title}" (${row.video_id}): sign-in-gated`
+          );
+          await query("DELETE FROM pending_videos WHERE video_id = $1", [
+            row.video_id,
+          ]);
+          continue;
+        }
+        throw transcriptError;
+      }
       console.log(
         `[Pending] Transcript result for ${row.video_id}: ${transcript ? `${transcript.length} chars` : "null"}`
       );
@@ -394,7 +412,18 @@ export async function fetchAndSummarizeVideos(
         console.log(`  Processing video: ${video.title} (${video.id})`);
 
         console.log(`  [Cron] Fetching transcript for ${video.id}...`);
-        const transcript = await getTranscriptFromYouTube(video.id);
+        let transcript: string | null = null;
+        try {
+          transcript = await getTranscriptFromYouTube(video.id);
+        } catch (transcriptError) {
+          if (transcriptError instanceof LoginRequiredError) {
+            console.warn(
+              `  [Cron] Skipping login-required video "${video.title}" (${video.id}): sign-in-gated`
+            );
+            continue;
+          }
+          throw transcriptError;
+        }
         console.log(
           `  [Cron] Transcript result for ${video.id}: ${transcript ? `${transcript.length} chars` : "null"}`
         );

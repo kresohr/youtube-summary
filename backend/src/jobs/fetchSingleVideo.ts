@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { query } from "../lib/db.js";
-import { extractVideoId } from "./youtubeTranscript.js";
+import { extractVideoId, LoginRequiredError } from "./youtubeTranscript.js";
 import {
   getTranscriptFromYouTube,
   generateSummaryWithOpenRouter,
@@ -233,7 +233,24 @@ async function processSingleVideo(
 
     // 4. Fetch transcript
     console.log(`[SingleVideo] Step 4: Fetching transcript...`);
-    const transcript = await getTranscriptFromYouTube(videoId);
+    let transcript: string | null = null;
+    try {
+      transcript = await getTranscriptFromYouTube(videoId);
+    } catch (transcriptError) {
+      if (transcriptError instanceof LoginRequiredError) {
+        console.error(
+          `[SingleVideo] Login-required for ${videoId}: ${transcriptError.message}`
+        );
+        jobs.set(jobId, {
+          status: "error",
+          error:
+            "This video is age-restricted or login-gated. YouTube requires sign-in to access its transcript, which this service does not support.",
+        });
+        scheduleCleanup(jobId);
+        return;
+      }
+      throw transcriptError;
+    }
     console.log(
       `[SingleVideo] Transcript result: ${transcript ? `${transcript.length} chars` : "null"}`
     );

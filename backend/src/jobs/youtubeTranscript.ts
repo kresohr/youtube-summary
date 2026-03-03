@@ -1,6 +1,16 @@
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
+/** Thrown when every transcript method is blocked by YouTube's sign-in gate. */
+export class LoginRequiredError extends Error {
+  constructor(videoId: string, detail: string) {
+    super(
+      `This video requires sign-in (age-restricted or login-gated) and cannot be transcribed without authentication. (${videoId}) — ${detail}`
+    );
+    this.name = "LoginRequiredError";
+  }
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 /** Canonical segment shape returned by all transcript sources. */
@@ -172,9 +182,6 @@ async function fetchTranscriptViaScrape(
   const timedTextResponse = await fetch(trackUrl, {
     headers: {
       "User-Agent": USER_AGENT,
-      // Forwarding Referer + session cookies makes the request resemble a
-      // real browser continuation, which increases the chance of a non-empty
-      // response from YouTube's video-timedtext servers.
       Referer: "https://www.youtube.com/",
       ...(pageCookies ? { Cookie: pageCookies } : {}),
     },
@@ -261,6 +268,19 @@ const INNERTUBE_CLIENTS = [
     userAgent: USER_AGENT,
     extraContext: {},
   },
+  {
+    // Simplified embedded TV player — separate bot-mitigation tier, has been
+    // observed to bypass some age-restriction checks that the standard
+    // TVHTML5 client hits when running from datacenter IPs.
+    clientName: "TVHTML5_SIMPLY_EMBEDDED_PLAYER" as const,
+    clientVersion: "2.0",
+    userAgent:
+      "Mozilla/5.0 (SMART-TV; LINUX; Tizen 6.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/6.0 TV Safari/538.1",
+    extraContext: {},
+    // embedUrl goes in context.thirdParty — required for the embedded
+    // player client to unlock age-restricted content.
+    thirdParty: { embedUrl: "https://www.youtube.com/" },
+  },
 ];
 
 /**
@@ -303,6 +323,11 @@ async function fetchTranscriptViaInnerTube(
                   gl: "US",
                   ...client.extraContext,
                 },
+                // Some clients (e.g. TVHTML5_SIMPLY_EMBEDDED_PLAYER) require
+                // a thirdParty context block to unlock age-gated content.
+                ...("thirdParty" in client && client.thirdParty
+                  ? { thirdParty: client.thirdParty }
+                  : {}),
               },
             }),
           }
@@ -363,7 +388,9 @@ async function fetchTranscriptViaInnerTube(
         );
 
         const timedTextResp = await fetch(trackUrl, {
-          headers: { "User-Agent": client.userAgent },
+          headers: {
+            "User-Agent": client.userAgent,
+          },
         });
 
         if (!timedTextResp.ok) {
@@ -504,6 +531,15 @@ export const transcribeVideo = async (
   console.error(
     `[Transcript] ALL methods failed for ${videoId}: ${aggregated}`
   );
+
+  // If every failure mentions LOGIN_REQUIRED, this video is sign-in-gated
+  // (age-restricted, members-only, etc.) and cannot be bypassed without
+  // authentication.  Surface a clear, actionable error instead of a generic one.
+  const allLoginRequired = errors.every((e) => e.includes("LOGIN_REQUIRED"));
+  if (allLoginRequired) {
+    throw new LoginRequiredError(videoId, aggregated);
+  }
+
   throw new Error(`Transcript unavailable for ${videoId} — ${aggregated}`);
 };
 
