@@ -6,16 +6,17 @@ _Warning: This project was 'vibecoded' with guided assistance and personal archi
 
 ## Tech Stack
 
-| Layer                | Technology                                        |
-| -------------------- | ------------------------------------------------- |
-| **Frontend**         | Vue.js 3 + TypeScript, Vite, Vue Router, Axios    |
-| **Backend**          | Express.js 5 + TypeScript (Node 22), node-cron    |
-| **Database**         | PostgreSQL 16 (raw SQL via `pg` driver)           |
-| **Transcripts**      | youtube-transcript-plus (free, no API key needed) |
-| **AI Summaries**     | OpenRouter API (free model tier available)        |
-| **Auth**             | JWT (jsonwebtoken) + bcrypt                       |
-| **Containerization** | Docker + Docker Compose                           |
-| **Reverse Proxy**    | Nginx (production only, with Let's Encrypt SSL)   |
+| Layer                | Technology                                                                                  |
+| -------------------- | ------------------------------------------------------------------------------------------- |
+| **Frontend**         | Vue.js 3 + TypeScript, Vite, Vue Router, Axios                                              |
+| **Backend**          | Express.js 5 + TypeScript (Node 22), node-cron                                              |
+| **Database**         | PostgreSQL 16 (raw SQL via `pg` driver)                                                     |
+| **Transcripts**      | Custom extractor — 3-method waterfall (see [Transcript Extraction](#transcript-extraction)) |
+| **Headless browser** | Puppeteer + puppeteer-extra + puppeteer-extra-plugin-stealth (Method 3 only)                |
+| **AI Summaries**     | OpenRouter API (free model tier available)                                                  |
+| **Auth**             | JWT (jsonwebtoken) + bcrypt                                                                 |
+| **Containerization** | Docker + Docker Compose                                                                     |
+| **Reverse Proxy**    | Nginx (production only, with Let's Encrypt SSL)                                             |
 
 ## Project Structure
 
@@ -34,7 +35,8 @@ youtube-summary/
 │       ├── server.ts         # Express app, cron scheduler, health check
 │       ├── seed.ts           # Seeds the default admin user
 │       ├── lib/
-│       │   └── db.ts         # PostgreSQL connection pool (pg)
+│       │   ├── db.ts           # PostgreSQL connection pool (pg)
+│       │   └── cronManager.ts  # Cron job lifecycle manager
 │       ├── middleware/
 │       │   ├── auth.ts       # JWT auth middleware
 │       │   └── noIndex.ts    # X-Robots-Tag header
@@ -45,7 +47,9 @@ youtube-summary/
 │       │   └── admin.ts      # POST /api/admin/trigger-fetch (protected)
 │       └── jobs/
 │           ├── fetchVideos.ts       # Orchestrates fetch → transcript → summary → save
-│           └── youtubeTranscript.ts # Transcript extraction via youtube-transcript-plus
+│           ├── fetchSingleVideo.ts  # On-demand single-video summarisation (job queue)
+│           ├── youtubeTranscript.ts # Transcript extraction — Methods 1 (scraper) & 2 (InnerTube)
+│           └── headlessBrowser.ts  # Transcript extraction — Method 3 (stealth Chromium)
 │
 ├── frontend/
 │   ├── Dockerfile            # Multi-stage: Vite build → Nginx static server
@@ -253,7 +257,7 @@ Each run:
 1. Queries all configured YouTube channels from the database
 2. Fetches videos published in the last 24 hours via the YouTube Data API
 3. Skips videos already in the database
-4. Extracts transcripts using `youtube-transcript-plus`
+4. Extracts transcripts using the 3-method waterfall (see [Transcript Extraction](#transcript-extraction))
 5. Generates summaries via the OpenRouter API
 6. Saves video metadata and summary to PostgreSQL
 
@@ -302,6 +306,19 @@ The database is initialized automatically by `backend/init.sql` when the Postgre
 - `users` — admin accounts (username, bcrypt password)
 - `youtube_channels` — tracked YouTube channels
 - `videos` — fetched videos with AI-generated summaries, linked to channels via `channel_id`
+
+## Transcript Extraction
+
+Transcripts are fetched with a custom, dependency-free waterfall — each method is tried in order and the first success wins:
+
+| Method                          | Mechanism                                                                                                                                                                                                                                                                                                                        | Notes                                                                                                |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| **1 — HTML scraper**            | Fetches the YouTube watch page, extracts `ytInitialPlayerResponse` using a bracket-depth parser, downloads the best caption track as JSON3 timedtext                                                                                                                                                                             | Fastest; fails when YouTube's bot-mitigation returns an empty timedtext body                         |
+| **2 — InnerTube `/player` API** | POSTs to `/youtubei/v1/player` as an IOS then ANDROID mobile client                                                                                                                                                                                                                                                              | Bypasses the `UNPLAYABLE` status that WEB clients receive from datacenter IPs; includes retry-on-400 |
+| **3 — Stealth Chromium**        | Launches a real Chromium instance patched with `puppeteer-extra-plugin-stealth` (17+ fingerprint patches: `navigator.webdriver`, canvas, WebGL, plugins, etc.), restores persisted session cookies, then captures captions via: **(A)** network response interception or **(B)** in-page `fetch()` with `credentials: "include"` | Last resort; slowest (~15–30 s); saves cookies to `backend/data/yt-cookies.json` across runs         |
+
+> ⚠️ **Legal notice — Method 3 (headless browser):**  
+> Automating a browser to interact with YouTube **might** violate [YouTube's Terms of Service](https://www.youtube.com/t/terms) (section 5-B, which prohibits circumventing technical measures and automated access without authorisation). **Read the YouTube ToS carefully before enabling or deploying Method 3.** This code is provided strictly for educational purposes — to demonstrate how headless browser fingerprint evasion works so that developers building their own video streaming platforms can understand and guard against it.
 
 ## License
 
