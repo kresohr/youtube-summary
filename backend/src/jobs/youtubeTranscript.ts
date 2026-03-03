@@ -264,29 +264,29 @@ async function fetchTranscriptViaInnerTube(
       );
       try {
         const playerResp = await fetch(
-        `https://www.youtube.com/youtubei/v1/player?key=${INNERTUBE_API_KEY}`,
-        {
-          method: "POST",
-          headers: {
-            "User-Agent": client.userAgent,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            videoId,
-            context: {
-              client: {
-                clientName: client.clientName,
-                clientVersion: client.clientVersion,
-                hl: "en",
-                gl: "US",
-                ...client.extraContext,
-              },
+          `https://www.youtube.com/youtubei/v1/player?key=${INNERTUBE_API_KEY}`,
+          {
+            method: "POST",
+            headers: {
+              "User-Agent": client.userAgent,
+              "Content-Type": "application/json",
             },
-          }),
-        }
-      );
+            body: JSON.stringify({
+              videoId,
+              context: {
+                client: {
+                  clientName: client.clientName,
+                  clientVersion: client.clientVersion,
+                  hl: "en",
+                  gl: "US",
+                  ...client.extraContext,
+                },
+              },
+            }),
+          }
+        );
 
-      if (!playerResp.ok) {
+        if (!playerResp.ok) {
           // On 400, retry after a short delay (rate-limit workaround)
           if (playerResp.status === 400 && attempt === 0) {
             console.warn(
@@ -300,56 +300,56 @@ async function fetchTranscriptViaInnerTube(
           );
         }
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const playerBody = (await playerResp.json()) as any;
-      const captionTracks: CaptionTrack[] | undefined =
-        playerBody?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const playerBody = (await playerResp.json()) as any;
+        const captionTracks: CaptionTrack[] | undefined =
+          playerBody?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
-      if (!captionTracks || captionTracks.length === 0) {
-        throw new Error(
-          `InnerTube ${client.clientName}: no caption tracks returned`
+        if (!captionTracks || captionTracks.length === 0) {
+          throw new Error(
+            `InnerTube ${client.clientName}: no caption tracks returned`
+          );
+        }
+
+        const ranked = rankCaptionTracks(captionTracks);
+        const track = ranked[0];
+        const rawBaseUrl = track.baseUrl.replace(/&amp;/g, "&");
+        const trackUrl = rawBaseUrl.includes("fmt=")
+          ? rawBaseUrl.replace(/fmt=[^&]*/, "fmt=json3")
+          : `${rawBaseUrl}&fmt=json3`;
+
+        console.log(
+          `[Transcript] InnerTube ${client.clientName}: fetching timedtext (${track.languageCode}${track.kind ? `, ${track.kind}` : ""}) for ${videoId}`
         );
-      }
 
-      const ranked = rankCaptionTracks(captionTracks);
-      const track = ranked[0];
-      const rawBaseUrl = track.baseUrl.replace(/&amp;/g, "&");
-      const trackUrl = rawBaseUrl.includes("fmt=")
-        ? rawBaseUrl.replace(/fmt=[^&]*/, "fmt=json3")
-        : `${rawBaseUrl}&fmt=json3`;
+        const timedTextResp = await fetch(trackUrl, {
+          headers: { "User-Agent": client.userAgent },
+        });
 
-      console.log(
-        `[Transcript] InnerTube ${client.clientName}: fetching timedtext (${track.languageCode}${track.kind ? `, ${track.kind}` : ""}) for ${videoId}`
-      );
+        if (!timedTextResp.ok) {
+          throw new Error(`InnerTube timedtext HTTP ${timedTextResp.status}`);
+        }
 
-      const timedTextResp = await fetch(trackUrl, {
-        headers: { "User-Agent": client.userAgent },
-      });
+        const timedTextBody = await timedTextResp.text();
+        if (timedTextBody.length === 0) {
+          throw new Error(
+            `InnerTube ${client.clientName}: timedtext endpoint returned empty body`
+          );
+        }
 
-      if (!timedTextResp.ok) {
-        throw new Error(`InnerTube timedtext HTTP ${timedTextResp.status}`);
-      }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const timedText = JSON.parse(timedTextBody) as any;
+        const events: Json3Event[] = timedText?.events ?? [];
+        const segments = json3ToSegments(events, track.languageCode);
 
-      const timedTextBody = await timedTextResp.text();
-      if (timedTextBody.length === 0) {
-        throw new Error(
-          `InnerTube ${client.clientName}: timedtext endpoint returned empty body`
-        );
-      }
+        if (segments.length === 0) {
+          throw new Error(
+            `InnerTube ${client.clientName}: timedtext track yielded no segments`
+          );
+        }
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const timedText = JSON.parse(timedTextBody) as any;
-      const events: Json3Event[] = timedText?.events ?? [];
-      const segments = json3ToSegments(events, track.languageCode);
-
-      if (segments.length === 0) {
-        throw new Error(
-          `InnerTube ${client.clientName}: timedtext track yielded no segments`
-        );
-      }
-
-      const charCount = segments.reduce((sum, s) => sum + s.text.length, 0);
-      console.log(
+        const charCount = segments.reduce((sum, s) => sum + s.text.length, 0);
+        console.log(
           `[Transcript] Success (InnerTube ${client.clientName}) for ${videoId}: ${segments.length} segment(s), ~${charCount} chars`
         );
         return segments;
@@ -417,7 +417,9 @@ export const transcribeVideo = async (
       innerTubeError instanceof Error
         ? innerTubeError.message
         : String(innerTubeError);
-    console.warn(`[Transcript] InnerTube /player failed for ${videoId}: ${errMsg}`);
+    console.warn(
+      `[Transcript] InnerTube /player failed for ${videoId}: ${errMsg}`
+    );
     errors.push(`innertube-player: ${errMsg}`);
   }
 
@@ -426,9 +428,7 @@ export const transcribeVideo = async (
   console.error(
     `[Transcript] ALL methods failed for ${videoId}: ${aggregated}`
   );
-  throw new Error(
-    `Transcript unavailable for ${videoId} — ${aggregated}`
-  );
+  throw new Error(`Transcript unavailable for ${videoId} — ${aggregated}`);
 };
 
 export function extractVideoId(input: string): string | null {
