@@ -3,14 +3,20 @@ FROM node:22-alpine
 # 1. Install build dependencies required for native modules (bcrypt)
 #    + Chromium and all its Alpine system dependencies for Puppeteer
 RUN apk add --no-cache \
-    python3 make g++ \
+    python3 py3-pip make g++ \
     chromium \
     nss \
     freetype \
     harfbuzz \
     ca-certificates \
     ttf-freefont \
-    udev
+    udev \
+    ffmpeg
+
+# Install yt-dlp — used to extract captions/transcripts from datacenter IPs
+# where YouTube's poToken requirement blocks server-side HTTP methods.
+# yt-dlp generates poToken internally and keeps its client fingerprints current.
+RUN pip3 install --no-cache-dir --break-system-packages yt-dlp
 
 # Tell Puppeteer to use the system Chromium and skip downloading its own
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
