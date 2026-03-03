@@ -134,9 +134,19 @@ async function fetchVideoMetadataFromPage(
     const titleMatch =
       html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/i) ??
       html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:title"/i);
+
+    // Fallback: <title>Video Title - YouTube</title>  (always present, even on
+    // consent/redirect pages the server may return instead of the watch page).
+    const titleTagMatch = html.match(/<title>([^<]+)<\/title>/i);
+    const titleTagRaw = titleTagMatch
+      ? titleTagMatch[1].replace(/\s*[-–|]\s*YouTube\s*$/i, "").trim()
+      : "";
+
     const title = titleMatch
       ? decodeHtmlEntities(titleMatch[1])
-      : `Video ${videoId}`;
+      : titleTagRaw
+        ? decodeHtmlEntities(titleTagRaw)
+        : `Video ${videoId}`;
 
     // og:image  →  <meta property="og:image" content="…">
     const thumbMatch =

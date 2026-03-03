@@ -310,14 +310,41 @@ export async function fetchTranscriptViaHeadless(
       `[Transcript] [Headless] Landed on: ${page.url()} (title: "${await page.title()}")`
     );
 
-    // ── Try Vector A result (short post-navigation window) ──────────────────
+    // ── Trigger playback (bypass autoplay policy) ───────────────────────────
     //
-    // Poll for up to 8 s to give the player time to fire the timedtext request
-    // after networkidle2.  If it already fired during page load the first
-    // iteration wins immediately.
+    // Chrome's Media Engagement Index starts at 0 for a fresh profile, so
+    // autoplay=1 in the URL is silently ignored.  Without playback, no
+    // timedtext request is ever fired (Vector A) and YouTube may serve a
+    // restricted player bootstrap with no captionTracks (Vector B).
+    //
+    // Clicking the play button is the same as a user pressing play — it
+    // satisfies Chrome's "user gesture" requirement and causes the player to
+    // fully initialise, request captions, and begin streaming.
+    try {
+      // Wait briefly for the player controls to render after networkidle2.
+      await page.waitForSelector(".ytp-play-button", { timeout: 5_000 });
+      const playBtn = await page.$(
+        '.ytp-play-button[data-title-no-tooltip="Play"], .ytp-play-button[aria-label*="Play"], .ytp-play-button'
+      );
+      if (playBtn) {
+        await playBtn.click();
+        console.log(
+          `[Transcript] [Headless] Play button clicked — waiting for timedtext request…`
+        );
+      }
+    } catch {
+      console.warn(
+        `[Transcript] [Headless] Could not find/click play button — continuing anyway`
+      );
+    }
+
+    // ── Try Vector A result (poll after clicking play) ──────────────────────
+    //
+    // Now that the player is actually playing, the timedtext request fires
+    // within 1–2 s.  Poll for up to 12 s to be safe on slow containers.
     if (capturedTimedText === null) {
       await new Promise<void>((resolve) => {
-        const deadline = Date.now() + 8_000;
+        const deadline = Date.now() + 12_000;
         const poll = setInterval(() => {
           if (capturedTimedText !== null || Date.now() >= deadline) {
             clearInterval(poll);
@@ -403,7 +430,17 @@ export async function fetchTranscriptViaHeadless(
         const raw = (window as any).ytInitialPlayerResponse;
         if (!raw)
           return { error: "ytInitialPlayerResponse not found in page context" };
-        return { error: "No captionTracks in ytInitialPlayerResponse" };
+        // Log the captions sub-tree so we can debug what YouTube actually
+        // returned — useful when the player bootstrap differs by region/session.
+        const captionsDebug = JSON.stringify(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (raw as any)?.captions ??
+            (raw as any)?.playabilityStatus ??
+            "(no captions/playability key)"
+        ).slice(0, 400);
+        return {
+          error: `No captionTracks in ytInitialPlayerResponse. debug: ${captionsDebug}`,
+        };
       }
 
       const tracks: Array<{
