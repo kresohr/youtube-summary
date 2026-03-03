@@ -18,7 +18,7 @@ interface CaptionTrack {
   kind?: string;
 }
 
-interface Json3Event {
+export interface Json3Event {
   tStartMs: number;
   dDurationMs?: number;
   segs?: { utf8?: string }[];
@@ -38,8 +38,12 @@ function rankCaptionTracks(tracks: CaptionTrack[]): CaptionTrack[] {
   });
 }
 
-/** Convert JSON3 timedtext events to canonical TranscriptSegment[]. */
-function json3ToSegments(
+/**
+ * Convert JSON3 timedtext events to canonical TranscriptSegment[].
+ * Exported so that Method 3 (headless browser) can reuse the same
+ * parsing logic without duplicating it.
+ */
+export function json3ToSegments(
   events: Json3Event[],
   lang: string
 ): TranscriptSegment[] {
@@ -379,6 +383,15 @@ async function fetchTranscriptViaInnerTube(
  *                          clients. These mobile clients bypass the UNPLAYABLE
  *                          status that WEB clients receive from datacenter IPs.
  *                          Includes retry-on-400 to handle rate limiting.
+ *   3. Headless Chromium — Launches a real browser patched with the stealth
+ *                          plugin (defeats navigator.webdriver, canvas
+ *                          fingerprint, and 15+ other heuristics). Restores
+ *                          persisted cookies from backend/data/yt-cookies.json
+ *                          so the session looks like a returning user.
+ *                          Two extraction vectors:
+ *                            A) Network interception of the timedtext response
+ *                            B) In-page JS eval of ytInitialPlayerResponse +
+ *                               in-browser fetch with credentials: "include"
  *
  * Throws an aggregated error if all methods fail.
  */
@@ -421,6 +434,27 @@ export const transcribeVideo = async (
       `[Transcript] InnerTube /player failed for ${videoId}: ${errMsg}`
     );
     errors.push(`innertube-player: ${errMsg}`);
+  }
+
+  // ── Method 3: Headless browser (stealth Chromium + session cookies) ─────
+  //
+  // Only attempted when both lightweight server-side methods are blocked.
+  // Spawns a real Chromium instance patched with puppeteer-extra-plugin-stealth
+  // to defeat all common headless-detection heuristics, then employs two
+  // extraction vectors (network interception → in-page JS eval fallback).
+  //
+  // Dynamic import avoids a circular module dependency at load time, since
+  // headlessBrowser.ts itself imports helpers from this module.
+  console.warn(`[Transcript] Trying headless browser (stealth Chromium) for ${videoId}...`);
+  try {
+    const { fetchTranscriptViaHeadless } = await import("./headlessBrowser.js");
+    const segments = await fetchTranscriptViaHeadless(videoId);
+    return segments;
+  } catch (headlessError) {
+    const errMsg =
+      headlessError instanceof Error ? headlessError.message : String(headlessError);
+    console.warn(`[Transcript] Headless browser failed for ${videoId}: ${errMsg}`);
+    errors.push(`headless: ${errMsg}`);
   }
 
   // ── All methods exhausted ────────────────────────────────────────────────
