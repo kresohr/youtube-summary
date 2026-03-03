@@ -25,16 +25,18 @@
         <p>{{ summaryPreview }}</p>
       </div>
 
-      <button
-        v-if="isLongSummary"
-        class="view-more-btn"
-        @click="showDialog = true"
-      >
-        View More
-      </button>
+      <div class="view-more-wrapper">
+        <button
+          v-if="isLongSummary"
+          class="view-more-btn"
+          @click="showDialog = true"
+        >
+          View More
+        </button>
 
-      <div v-if="formattedDuration" class="video-duration">
-        {{ formattedDuration }}
+        <div v-if="formattedDuration" class="video-duration">
+          {{ formattedDuration }}
+        </div>
       </div>
 
       <div class="card-meta">
@@ -223,6 +225,11 @@
     margin-bottom: 0.5rem;
   }
 
+  .view-more-wrapper {
+    display: flex;
+    flex-direction: column;
+  }
+
   .view-more-btn {
     background: none;
     color: var(--color-primary);
@@ -236,7 +243,6 @@
   }
 
   .video-duration {
-    display: inline-block;
     font-size: 0.7rem;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
@@ -246,6 +252,8 @@
     padding: 0.15rem 0.4rem;
     margin-bottom: 0.6rem;
     letter-spacing: 0.03em;
+    max-width: 80px;
+    margin-inline: auto;
   }
 
   .card-meta {

@@ -24,6 +24,36 @@ interface Json3Event {
   segs?: { utf8?: string }[];
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Rank caption tracks: manual first, English preferred. */
+function rankCaptionTracks(tracks: CaptionTrack[]): CaptionTrack[] {
+  return [...tracks].sort((a, b) => {
+    const aManual = a.kind !== "asr" ? 0 : 1;
+    const bManual = b.kind !== "asr" ? 0 : 1;
+    if (aManual !== bManual) return aManual - bManual;
+    const aEn = a.languageCode.startsWith("en") ? 0 : 1;
+    const bEn = b.languageCode.startsWith("en") ? 0 : 1;
+    return aEn - bEn;
+  });
+}
+
+/** Convert JSON3 timedtext events to canonical TranscriptSegment[]. */
+function json3ToSegments(
+  events: Json3Event[],
+  lang: string
+): TranscriptSegment[] {
+  return events
+    .filter((e) => Array.isArray(e.segs))
+    .map((e) => ({
+      text: (e.segs ?? []).map((s) => s.utf8 ?? "").join(""),
+      duration: (e.dDurationMs ?? 0) / 1000,
+      offset: e.tStartMs / 1000,
+      lang,
+    }))
+    .filter((s) => s.text.trim().length > 0);
+}
+
 // ─── Primary method: ytInitialPlayerResponse scraper ─────────────────────────
 
 /**
@@ -122,16 +152,7 @@ async function fetchTranscriptViaScrape(
         .join(", ")
   );
 
-  // Rank: manual captions first, then English preferred over other languages
-  const ranked = [...captionTracks].sort((a, b) => {
-    const aManual = a.kind !== "asr" ? 0 : 1;
-    const bManual = b.kind !== "asr" ? 0 : 1;
-    if (aManual !== bManual) return aManual - bManual;
-    const aEn = a.languageCode.startsWith("en") ? 0 : 1;
-    const bEn = b.languageCode.startsWith("en") ? 0 : 1;
-    return aEn - bEn;
-  });
-
+  const ranked = rankCaptionTracks(captionTracks);
   const track = ranked[0];
   // baseUrl values inside ytInitialPlayerResponse are HTML-entity-encoded
   // (& → &amp;). Decode before constructing the actual fetch URL.
@@ -175,16 +196,7 @@ async function fetchTranscriptViaScrape(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const timedText = JSON.parse(timedTextBody) as any;
   const events: Json3Event[] = timedText?.events ?? [];
-
-  const segments: TranscriptSegment[] = events
-    .filter((e) => Array.isArray(e.segs))
-    .map((e) => ({
-      text: (e.segs ?? []).map((s) => s.utf8 ?? "").join(""),
-      duration: (e.dDurationMs ?? 0) / 1000,
-      offset: e.tStartMs / 1000,
-      lang: track.languageCode,
-    }))
-    .filter((s) => s.text.trim().length > 0);
+  const segments = json3ToSegments(events, track.languageCode);
 
   if (segments.length === 0) {
     throw new Error(`TimedText track yielded no segments for ${videoId}`);
@@ -201,15 +213,33 @@ async function fetchTranscriptViaScrape(
  */
 const INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 
+/** Android UA required when using the ANDROID InnerTube client. */
+const ANDROID_USER_AGENT =
+  "com.google.android.youtube/19.44.38 (Linux; U; Android 14; en_US) gzip";
+
 /**
  * Innertube player clients to try in order.
- * ANDROID returns captions for the widest range of video types.
- * WEB is tried second as a fallback.
+ * IOS is tried first — it reliably returns captions and timedtext data
+ * even from datacenter IPs where WEB clients return UNPLAYABLE.
+ * ANDROID is tried second (also works from datacenter IPs).
+ * WEB clients are intentionally excluded — they return UNPLAYABLE/ERROR
+ * from non-residential server IPs.
  */
 const INNERTUBE_CLIENTS = [
-  { clientName: "ANDROID", clientVersion: "19.44.38" },
-  { clientName: "WEB", clientVersion: "2.20260303.00.00" },
-] as const;
+  {
+    clientName: "IOS" as const,
+    clientVersion: "19.45.4",
+    userAgent:
+      "com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)",
+    extraContext: { deviceModel: "iPhone16,2", osVersion: "18.1.0.22B83" },
+  },
+  {
+    clientName: "ANDROID" as const,
+    clientVersion: "19.44.38",
+    userAgent: ANDROID_USER_AGENT,
+    extraContext: { androidSdkVersion: 34, platform: "MOBILE" },
+  },
+];
 
 /**
  * Fetch caption tracks via the InnerTube /youtubei/v1/player API, then
@@ -225,16 +255,20 @@ async function fetchTranscriptViaInnerTube(
   let lastError: unknown = null;
 
   for (const client of INNERTUBE_CLIENTS) {
-    console.log(
-      `[Transcript] InnerTube client ${client.clientName} for ${videoId}`
-    );
-    try {
-      const playerResp = await fetch(
+    // Retry once on HTTP 400 — YouTube sometimes rate-limits the first
+    // request from a given IP but accepts the second.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      console.log(
+        `[Transcript] InnerTube ${client.clientName} for ${videoId}` +
+          (attempt > 0 ? ` (retry ${attempt})` : "")
+      );
+      try {
+        const playerResp = await fetch(
         `https://www.youtube.com/youtubei/v1/player?key=${INNERTUBE_API_KEY}`,
         {
           method: "POST",
           headers: {
-            "User-Agent": USER_AGENT,
+            "User-Agent": client.userAgent,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
@@ -245,6 +279,7 @@ async function fetchTranscriptViaInnerTube(
                 clientVersion: client.clientVersion,
                 hl: "en",
                 gl: "US",
+                ...client.extraContext,
               },
             },
           }),
@@ -252,10 +287,18 @@ async function fetchTranscriptViaInnerTube(
       );
 
       if (!playerResp.ok) {
-        throw new Error(
-          `InnerTube player API returned HTTP ${playerResp.status}`
-        );
-      }
+          // On 400, retry after a short delay (rate-limit workaround)
+          if (playerResp.status === 400 && attempt === 0) {
+            console.warn(
+              `[Transcript] InnerTube ${client.clientName}: HTTP 400, retrying in 1.5s...`
+            );
+            await new Promise((r) => setTimeout(r, 1500));
+            continue;
+          }
+          throw new Error(
+            `InnerTube player API returned HTTP ${playerResp.status}`
+          );
+        }
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const playerBody = (await playerResp.json()) as any;
@@ -268,16 +311,7 @@ async function fetchTranscriptViaInnerTube(
         );
       }
 
-      // Rank tracks: manual first, English preferred
-      const ranked = [...captionTracks].sort((a, b) => {
-        const aManual = a.kind !== "asr" ? 0 : 1;
-        const bManual = b.kind !== "asr" ? 0 : 1;
-        if (aManual !== bManual) return aManual - bManual;
-        const aEn = a.languageCode.startsWith("en") ? 0 : 1;
-        const bEn = b.languageCode.startsWith("en") ? 0 : 1;
-        return aEn - bEn;
-      });
-
+      const ranked = rankCaptionTracks(captionTracks);
       const track = ranked[0];
       const rawBaseUrl = track.baseUrl.replace(/&amp;/g, "&");
       const trackUrl = rawBaseUrl.includes("fmt=")
@@ -289,7 +323,7 @@ async function fetchTranscriptViaInnerTube(
       );
 
       const timedTextResp = await fetch(trackUrl, {
-        headers: { "User-Agent": USER_AGENT },
+        headers: { "User-Agent": client.userAgent },
       });
 
       if (!timedTextResp.ok) {
@@ -306,16 +340,7 @@ async function fetchTranscriptViaInnerTube(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const timedText = JSON.parse(timedTextBody) as any;
       const events: Json3Event[] = timedText?.events ?? [];
-
-      const segments: TranscriptSegment[] = events
-        .filter((e) => Array.isArray(e.segs))
-        .map((e) => ({
-          text: (e.segs ?? []).map((s) => s.utf8 ?? "").join(""),
-          duration: (e.dDurationMs ?? 0) / 1000,
-          offset: e.tStartMs / 1000,
-          lang: track.languageCode,
-        }))
-        .filter((s) => s.text.trim().length > 0);
+      const segments = json3ToSegments(events, track.languageCode);
 
       if (segments.length === 0) {
         throw new Error(
@@ -325,18 +350,19 @@ async function fetchTranscriptViaInnerTube(
 
       const charCount = segments.reduce((sum, s) => sum + s.text.length, 0);
       console.log(
-        `[Transcript] Success (InnerTube ${client.clientName}) for ${videoId}: ${segments.length} segment(s), ~${charCount} chars`
-      );
-      return segments;
-    } catch (err) {
-      const errName = err instanceof Error ? err.constructor.name : "Unknown";
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.warn(
-        `[Transcript] InnerTube ${client.clientName} failed for ${videoId} [${errName}]: ${errMsg}`
-      );
-      lastError = err;
-    }
-  }
+          `[Transcript] Success (InnerTube ${client.clientName}) for ${videoId}: ${segments.length} segment(s), ~${charCount} chars`
+        );
+        return segments;
+      } catch (err) {
+        const errName = err instanceof Error ? err.constructor.name : "Unknown";
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[Transcript] InnerTube ${client.clientName} failed for ${videoId} [${errName}]: ${errMsg}`
+        );
+        lastError = err;
+      }
+    } // end retry loop
+  } // end clients loop
 
   throw lastError ?? new Error(`InnerTube: all clients failed for ${videoId}`);
 }
@@ -347,16 +373,14 @@ async function fetchTranscriptViaInnerTube(
  * Fetch a transcript for the given YouTube URL or video ID.
  *
  * Strategy (tried in order, first success wins):
- *   1. HTML scraper  — fetches ytInitialPlayerResponse from the watch page,
- *                      extracts captionTracks, downloads JSON3 timedtext.
- *                      Works from browser environments; may return empty bodies
- *                      from server IPs that YouTube identifies as bots.
- *   2. InnerTube API — POSTs to /youtubei/v1/player with ANDROID then WEB
- *                      Innertube clients, retrieves fresh timedtext URLs that
- *                      are not subject to the same server-side restrictions.
- *   3. TubeText      — third-party transcript service, last resort.
+ *   1. HTML scraper      — fetches ytInitialPlayerResponse from the watch page,
+ *                          extracts captionTracks, downloads JSON3 timedtext.
+ *   2. InnerTube /player — POSTs to /youtubei/v1/player with IOS then ANDROID
+ *                          clients. These mobile clients bypass the UNPLAYABLE
+ *                          status that WEB clients receive from datacenter IPs.
+ *                          Includes retry-on-400 to handle rate limiting.
  *
- * Throws if all three sources fail.
+ * Throws an aggregated error if all methods fail.
  */
 export const transcribeVideo = async (
   videoUrl: string
@@ -365,6 +389,8 @@ export const transcribeVideo = async (
   console.log(
     `[Transcript] Fetching transcript for id: ${videoId} (input: ${videoUrl})`
   );
+
+  const errors: string[] = [];
 
   // ── Method 1: HTML scraper (ytInitialPlayerResponse) ─────────────────────
   try {
@@ -375,119 +401,35 @@ export const transcribeVideo = async (
     );
     return segments;
   } catch (scrapeError) {
-    const errName =
-      scrapeError instanceof Error ? scrapeError.constructor.name : "Unknown";
     const errMsg =
       scrapeError instanceof Error ? scrapeError.message : String(scrapeError);
-    console.warn(
-      `[Transcript] Scraper failed for ${videoId} [${errName}]: ${errMsg}`
-    );
+    console.warn(`[Transcript] Scraper failed for ${videoId}: ${errMsg}`);
+    errors.push(`scraper: ${errMsg}`);
   }
 
-  // ── Method 2: InnerTube /player API ──────────────────────────────────────
-  console.warn(`[Transcript] Trying InnerTube fallback for ${videoId}...`);
+  // ── Method 2: InnerTube /player API (IOS + ANDROID) ──────────────────────
+  console.warn(`[Transcript] Trying InnerTube /player for ${videoId}...`);
   try {
     const segments = await fetchTranscriptViaInnerTube(videoId);
     return segments;
   } catch (innerTubeError) {
-    const errName =
-      innerTubeError instanceof Error
-        ? innerTubeError.constructor.name
-        : "Unknown";
     const errMsg =
       innerTubeError instanceof Error
         ? innerTubeError.message
         : String(innerTubeError);
-    console.warn(
-      `[Transcript] InnerTube fallback failed for ${videoId} [${errName}]: ${errMsg}`
-    );
+    console.warn(`[Transcript] InnerTube /player failed for ${videoId}: ${errMsg}`);
+    errors.push(`innertube-player: ${errMsg}`);
   }
 
-  // ── Method 3: TubeText ───────────────────────────────────────────────────
-  console.warn(`[Transcript] Trying TubeText fallback for ${videoId}...`);
-  try {
-    const tubeTextSegments = await fetchTranscriptFromTubeText(videoId);
-    if (tubeTextSegments && tubeTextSegments.length > 0) {
-      const charCount = tubeTextSegments.reduce(
-        (sum, s) => sum + s.text.length,
-        0
-      );
-      console.log(
-        `[Transcript] Success (TubeText) for ${videoId}: ${tubeTextSegments.length} segment(s), ~${charCount} chars`
-      );
-      return tubeTextSegments;
-    }
-    throw new Error("TubeText returned an empty transcript");
-  } catch (tubeTextError) {
-    const errName =
-      tubeTextError instanceof Error
-        ? tubeTextError.constructor.name
-        : "Unknown";
-    const errMsg =
-      tubeTextError instanceof Error
-        ? tubeTextError.message
-        : String(tubeTextError);
-    console.error(
-      `[Transcript] TubeText fallback FAILED for ${videoId} [${errName}]: ${errMsg}`
-    );
-    throw tubeTextError;
-  }
-};
-
-// ─── TubeText fallback ────────────────────────────────────────────────────────
-
-/**
- * Fallback transcript fetch via TubeText (free, no API key needed).
- * Returns segments in the canonical TranscriptSegment shape.
- */
-async function fetchTranscriptFromTubeText(
-  videoId: string
-): Promise<TranscriptSegment[]> {
-  const url = `https://tubetext.com/api/transcript?videoId=${videoId}`;
-  console.log(`[Transcript] TubeText request: GET ${url}`);
-
-  const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      "Content-Type": "application/json",
-      "User-Agent": USER_AGENT,
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(
-      `TubeText API error for ${videoId}: HTTP ${response.status}`
-    );
-  }
-
-  const data = await response.json();
-
-  // TubeText may nest the array under different keys depending on its version
-  const rawSegments: unknown[] | undefined = Array.isArray(data.transcript)
-    ? data.transcript
-    : Array.isArray(data.segments)
-      ? data.segments
-      : Array.isArray(data.data)
-        ? data.data
-        : undefined;
-
-  if (!rawSegments) {
-    throw new Error(
-      `TubeText returned unexpected shape for ${videoId}: ${JSON.stringify(data).substring(0, 200)}`
-    );
-  }
-
-  // Normalise to TranscriptSegment shape
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return rawSegments.map(
-    (segment: any): TranscriptSegment => ({
-      text: segment.text ?? "",
-      duration: segment.duration ?? 0,
-      offset: segment.offset ?? 0,
-      lang: segment.lang ?? "en",
-    })
+  // ── All methods exhausted ────────────────────────────────────────────────
+  const aggregated = errors.join(" | ");
+  console.error(
+    `[Transcript] ALL methods failed for ${videoId}: ${aggregated}`
   );
-}
+  throw new Error(
+    `Transcript unavailable for ${videoId} — ${aggregated}`
+  );
+};
 
 export function extractVideoId(input: string): string | null {
   try {

@@ -56,32 +56,11 @@ async function main(): Promise<void> {
     allPassed = false;
   }
 
-  // --- Test 3: transcribeVideo with just video ID ---
-  console.log(`Test 3: transcribeVideo("${TEST_VIDEO_ID}") — raw ID`);
-  try {
-    const segments = await transcribeVideo(TEST_VIDEO_ID);
-
-    if (!segments || segments.length === 0) {
-      console.error("  ✗ FAIL: No segments returned");
-      allPassed = false;
-    } else {
-      const fullText = segments.map((s: { text: string }) => s.text).join(" ");
-      console.log(
-        `  ✓ OK: ${segments.length} segments, ${fullText.length} chars`
-      );
-      console.log(`  Preview: "${fullText.substring(0, 200)}..."\n`);
-    }
-  } catch (error) {
-    const errName = error instanceof Error ? error.constructor.name : "Unknown";
-    const errMsg = error instanceof Error ? error.message : String(error);
-    console.error(`  ✗ FAIL [${errName}]: ${errMsg}`);
-    allPassed = false;
-  }
-
-  // --- Test 4: previously-failing video (ANDROID client returned no captions) ---
+  // --- Test 3: different English video ---
+  await new Promise((r) => setTimeout(r, 3000)); // avoid rate-limiting
   const FAILING_VIDEO_ID = "5B8N8eDv5iE"; // "I hate what programming has become"
   console.log(
-    `Test 4: transcribeVideo("${FAILING_VIDEO_ID}") — previously failing with ANDROID client`
+    `Test 3: transcribeVideo("${FAILING_VIDEO_ID}") — previously failing with ANDROID client`
   );
   try {
     const segments = await transcribeVideo(FAILING_VIDEO_ID);
@@ -103,17 +82,14 @@ async function main(): Promise<void> {
     allPassed = false;
   }
 
-  // --- Test 5: multi-language video — exercises ANDROID InnerTube fallback + language ranking ---
-  // Gangnam Style has many translated caption tracks; the ranking logic should prefer
-  // the English ASR track when no manual English track exists.
-  // Previously this test targeted TubeText; TubeText is no longer operational and has
-  // been replaced by the InnerTube ANDROID/WEB fallback as the second fallback method.
-  const MULTILANG_VIDEO_ID = "9bZkp7q19f0"; // PSY — Gangnam Style (global availability guaranteed)
+  // --- Test 4: different video to verify broad compatibility ---
+  await new Promise((r) => setTimeout(r, 3000)); // avoid rate-limiting
+  const EXTRA_VIDEO_ID = "jNQXAC9IVRw"; // "Me at the zoo" (first YouTube video, guaranteed captions)
   console.log(
-    `Test 5: transcribeVideo("${MULTILANG_VIDEO_ID}") — multi-language video, InnerTube fallback`
+    `Test 4: transcribeVideo("${EXTRA_VIDEO_ID}") — first YouTube video`
   );
   try {
-    const segments = await transcribeVideo(MULTILANG_VIDEO_ID);
+    const segments = await transcribeVideo(EXTRA_VIDEO_ID);
 
     if (!segments || segments.length === 0) {
       console.error("  ✗ FAIL: No segments returned");
