@@ -166,14 +166,11 @@ export async function fetchTranscriptViaHeadless(
 
     // ── Vector A: network interception ─────────────────────────────────────
     //
-    // Register a response listener BEFORE navigation.  When the YouTube
-    // player fires its timedtext request (as part of normal player init),
-    // this listener captures the full response body — including any
-    // short-lived signed token in the URL and the decoded JSON3 payload.
-    //
-    // This is transparent to YouTube's server.  The request looks exactly
-    // like a real Chrome request because it IS a real Chrome request.
-
+    // Register the response listener BEFORE navigation so that even if the
+    // timedtext request fires mid-navigation we still capture it.
+    // NOTE: the timer is NOT started here — it starts after navigation
+    // completes, so a slow page-load (e.g. consent redirect) doesn't burn
+    // through the budget before the player even initialises.
     let resolveIntercepted!: (data: unknown) => void;
     let rejectIntercepted!: (err: Error) => void;
 
@@ -182,61 +179,92 @@ export async function fetchTranscriptViaHeadless(
       rejectIntercepted = reject;
     });
 
-    const interceptTimeout = setTimeout(() => {
-      rejectIntercepted(
-        new Error(
-          "Headless Vector A: no timedtext response intercepted within 15 s"
-        )
-      );
-    }, 15_000);
-
     page.on("response", async (response) => {
       const url = response.url();
-
-      // The YouTube player fetches timedtext from URLs that always contain
-      // the string "timedtext" — regardless of whether it goes via the
-      // youtube.com origin or a signed googlevideo.com CDN path.
       if (!url.includes("timedtext")) return;
-
       try {
         const body = await response.text();
-        if (body.length < 10) return; // empty / sentinel response
-
+        if (body.length < 10) return;
         const json = JSON.parse(body);
-        // JSON3 caption responses always have an `events` array
         if (Array.isArray(json.events)) {
           console.log(
             `[Transcript] [Headless] Vector A: intercepted timedtext response (${body.length} bytes) from ${url.slice(0, 80)}…`
           );
-          clearTimeout(interceptTimeout);
           resolveIntercepted(json);
         }
       } catch {
-        // Either the body was not JSON or the response stream was already
-        // consumed — ignore and keep waiting.
+        // non-JSON or stream already consumed — ignore
       }
     });
 
-    // Navigate to the watch page.  waitUntil: "networkidle2" lets the player
-    // fully initialise (including firing the timedtext request) before we
-    // proceed.
-    console.log(
-      `[Transcript] [Headless] Navigating to https://www.youtube.com/watch?v=${videoId}`
-    );
-    await page.goto(`https://www.youtube.com/watch?v=${videoId}`, {
+    // Navigate to the watch page.
+    // - hl=en&gl=US avoids GDPR consent-wall redirects.
+    // - autoplay=1 tells the player to start immediately, which causes it
+    //   to fire the timedtext request we are intercepting in Vector A.
+    const watchUrl = `https://www.youtube.com/watch?v=${videoId}&hl=en&gl=US&autoplay=1`;
+    console.log(`[Transcript] [Headless] Navigating to ${watchUrl}`);
+    await page.goto(watchUrl, {
       waitUntil: "networkidle2",
-      timeout: 30_000,
+      timeout: 45_000,
     });
 
-    // Persist updated cookies unconditionally so we accumulate session state
-    // across runs even if transcript extraction later fails.
+    // ── Consent-page handling ───────────────────────────────────────────────
+    //
+    // In some regions Chromium is redirected to consent.youtube.com before
+    // reaching the video. Detect this and accept, then re-navigate.
+    const landedUrl = page.url();
+    if (landedUrl.includes("consent.youtube.com") || landedUrl.includes("/consent")) {
+      console.log(`[Transcript] [Headless] Consent page detected (${landedUrl}), accepting…`);
+      try {
+        // New Google consent UI: a <form> with a "Accept all" button.
+        await page.waitForSelector('button, input[type="submit"]', { timeout: 5_000 });
+        await page.evaluate(() => {
+          const candidates = Array.from(
+            document.querySelectorAll<HTMLElement>('button, input[type="submit"]')
+          );
+          const accept = candidates.find((el) => {
+            const t = el.textContent?.toLowerCase() ?? "";
+            return (
+              t.includes("accept") ||
+              t.includes("agree") ||
+              t.includes("i agree") ||
+              t.includes("accept all")
+            );
+          });
+          if (accept) accept.click();
+        });
+        await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15_000 }).catch(() => {});
+      } catch {
+        console.warn(`[Transcript] [Headless] Could not dismiss consent page automatically`);
+      }
+
+      // Re-navigate to the actual video after consent
+      await page.goto(watchUrl, { waitUntil: "networkidle2", timeout: 45_000 });
+    }
+
+    // Persist updated cookies — including any consent cookies just set.
     const currentCookies = await page.cookies();
     await saveCookies(currentCookies as PersistedCookie[]);
 
-    // ── Try Vector A result ────────────────────────────────────────────────
+    // Log where we actually landed for debugging
+    console.log(`[Transcript] [Headless] Landed on: ${page.url()} (title: "${await page.title()}")`);
+
+    // ── Try Vector A result (short post-navigation window) ──────────────────
+    //
+    // Start a SHORT timer now that navigation is done.  If the timedtext
+    // request already fired during page load, interceptedPromise is already
+    // resolved and this races to zero.  We give it an extra 8 s in case the
+    // player initialises with a brief delay after networkidle2.
+    const postNavTimeout = new Promise<never>((_, reject) =>
+      setTimeout(
+        () => reject(new Error("Headless Vector A: no timedtext response intercepted within 8 s post-navigation")),
+        8_000
+      )
+    );
+
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const timedText = (await interceptedPromise) as any;
+      const timedText = (await Promise.race([interceptedPromise, postNavTimeout])) as any;
       const events: Json3Event[] = timedText?.events ?? [];
       const segments = json3ToSegments(events, "en");
 
@@ -275,30 +303,45 @@ export async function fetchTranscriptViaHeadless(
     // user clicking the captions button because it originates from the same
     // browser context, with the same cookies, the same TLS fingerprint, and
     // the same JavaScript call-stack.
-    //
-    // The only way to prevent this is to ensure the caption URL itself cannot
-    // be replayed — i.e. short-lived tokens bound to the session + IP, or
-    // DRM-encrypted payloads that require a trusted CDM to decrypt.
 
     console.log(
       `[Transcript] [Headless] Vector B: extracting ytInitialPlayerResponse via page.evaluate()`
     );
 
+    // Poll up to 10 s for ytInitialPlayerResponse to be populated — the player
+    // sometimes hydrates it a few hundred ms after networkidle2.
     const vectorBResult = await page.evaluate(async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const pr = (window as any).ytInitialPlayerResponse;
-      if (!pr)
-        return { error: "ytInitialPlayerResponse not found in page context" };
+      const deadline = Date.now() + 10_000;
+      let pr: Record<string, unknown> | null = null;
+      while (Date.now() < deadline) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const candidate = (window as any).ytInitialPlayerResponse;
+        if (
+          candidate &&
+          candidate?.captions?.playerCaptionsTracklistRenderer?.captionTracks
+            ?.length > 0
+        ) {
+          pr = candidate as Record<string, unknown>;
+          break;
+        }
+        // Wait 500 ms before retrying
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
+      if (!pr) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const raw = (window as any).ytInitialPlayerResponse;
+        if (!raw) return { error: "ytInitialPlayerResponse not found in page context" };
+        return { error: "No captionTracks in ytInitialPlayerResponse" };
+      }
 
       const tracks: Array<{
         baseUrl: string;
         languageCode: string;
         kind?: string;
-      }> = pr?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
-
-      if (tracks.length === 0) {
-        return { error: "No captionTracks in ytInitialPlayerResponse" };
-      }
+      }> =
+        (pr as any)?.captions?.playerCaptionsTracklistRenderer?.captionTracks ??
+        [];
 
       // Rank tracks: manual captions first, English preferred
       const sorted = [...tracks].sort((a, b) => {
@@ -316,10 +359,6 @@ export async function fetchTranscriptViaHeadless(
         ? rawUrl.replace(/fmt=[^&]*/, "fmt=json3")
         : `${rawUrl}&fmt=json3`;
 
-      // KEY INSIGHT: this fetch runs inside the browser.
-      // The browser sends its full cookie jar automatically — including any
-      // session cookies that YouTube set earlier in this page visit.
-      // No server-side scraper can replicate this without a full browser session.
       const resp = await fetch(timedTextUrl, { credentials: "include" });
       if (!resp.ok) {
         return {
