@@ -1,0 +1,3 @@
+# Ignore persisted browser session data — these files contain cookies and other
+# session state captured from YouTube. Never commit them.
+*.json
