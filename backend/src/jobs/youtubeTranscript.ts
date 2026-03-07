@@ -1,10 +1,61 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Path to the Puppeteer-persisted YouTube cookie store.
+ * Same derivation as headlessBrowser.ts: __dirname = backend/(src|dist)/jobs
+ * → ../../data = backend/data.
+ */
+const COOKIES_PATH = path.join(
+  __dirname,
+  "..",
+  "..",
+  "data",
+  "yt-cookies.json"
+);
+
+/**
+ * Convert a Puppeteer/puppeteer-extra cookie array (JSON) to Netscape cookie
+ * file format, which yt-dlp accepts via --cookies.
+ */
+function puppeteerCookiesToNetscape(
+  cookies: Array<{
+    name: string;
+    value: string;
+    domain?: string;
+    path?: string;
+    expires?: number;
+    secure?: boolean;
+  }>
+): string {
+  const lines = ["# Netscape HTTP Cookie File"];
+  for (const c of cookies) {
+    const domain = c.domain ?? ".youtube.com";
+    const includeSubdomains = domain.startsWith(".") ? "TRUE" : "FALSE";
+    const cookiePath = c.path ?? "/";
+    const isSecure = c.secure ? "TRUE" : "FALSE";
+    // expires <= 0 or absent means session cookie; yt-dlp treats 0 as session
+    const expiry =
+      c.expires && c.expires > 0 ? Math.floor(c.expires).toString() : "0";
+    lines.push(
+      [
+        domain,
+        includeSubdomains,
+        cookiePath,
+        isSecure,
+        expiry,
+        c.name,
+        c.value,
+      ].join("\t")
+    );
+  }
+  return lines.join("\n") + "\n";
+}
 
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -155,6 +206,34 @@ async function fetchTranscriptViaYtDlp(
   try {
     console.log(`[Transcript] yt-dlp fetching subtitles for ${videoId}...`);
 
+    // Pass persisted YouTube cookies if available so yt-dlp can bypass
+    // "Sign in to confirm you're not a bot" from datacenter IPs.
+    const cookieArgs: string[] = [];
+    try {
+      const raw = await readFile(COOKIES_PATH, "utf-8");
+      const puppeteerCookies = JSON.parse(raw) as Array<{
+        name: string;
+        value: string;
+        domain?: string;
+        path?: string;
+        expires?: number;
+        secure?: boolean;
+      }>;
+      if (Array.isArray(puppeteerCookies) && puppeteerCookies.length > 0) {
+        const netscapeCookiePath = path.join(tmpDir, "cookies.txt");
+        await writeFile(
+          netscapeCookiePath,
+          puppeteerCookiesToNetscape(puppeteerCookies)
+        );
+        cookieArgs.push("--cookies", netscapeCookiePath);
+        console.log(
+          `[Transcript] yt-dlp: passing ${puppeteerCookies.length} persisted cookie(s) for ${videoId}`
+        );
+      }
+    } catch {
+      // No cookie file yet — proceed without (yt-dlp will try unauthenticated)
+    }
+
     await execFileAsync(
       "yt-dlp",
       [
@@ -169,6 +248,7 @@ async function fetchTranscriptViaYtDlp(
         "srt",
         "-o",
         path.join(tmpDir, "t.%(ext)s"),
+        ...cookieArgs,
         videoUrl,
       ],
       { timeout: 30_000 }
