@@ -3,7 +3,7 @@ FROM node:22-alpine
 # 1. Install build dependencies required for native modules (bcrypt)
 #    + Chromium and all its Alpine system dependencies for Puppeteer
 RUN apk add --no-cache \
-    python3 make g++ \
+    python3 py3-pip make g++ \
     chromium \
     nss \
     freetype \
@@ -12,6 +12,9 @@ RUN apk add --no-cache \
     ttf-freefont \
     udev \
     ffmpeg
+
+# Install yt-dlp via pip3 (tracks upstream YouTube fixes more quickly than Alpine packages)
+RUN pip3 install -U yt-dlp
 
 # Tell Puppeteer to use the system Chromium and skip downloading its own
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \

@@ -1,3 +1,11 @@
+import { execFile } from "node:child_process";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
@@ -66,6 +74,133 @@ export function json3ToSegments(
       lang,
     }))
     .filter((s) => s.text.trim().length > 0);
+}
+
+// ─── Method 0: yt-dlp SRT ─────────────────────────────────────────────────────
+
+/**
+ * Parse an SRT subtitle file into canonical TranscriptSegment[].
+ * Handles both comma (SRT standard) and period separators in timestamps.
+ * HTML tags (e.g. <c>, <font>) are stripped from text lines.
+ */
+function parseSrt(srtContent: string, lang = "en"): TranscriptSegment[] {
+  const segments: TranscriptSegment[] = [];
+  const blocks = srtContent.split(/\n{2,}/);
+
+  for (const block of blocks) {
+    const lines = block.trim().split(/\r?\n/);
+    if (lines.length < 2) continue;
+
+    // Locate the timestamp line (skip optional sequence-number line)
+    let tsLineIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].includes("-->")) {
+        tsLineIdx = i;
+        break;
+      }
+    }
+    if (tsLineIdx === -1) continue;
+
+    const tsLine = lines[tsLineIdx];
+    const tsMatch = tsLine.match(
+      /(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/
+    );
+    if (!tsMatch) continue;
+
+    const toMs = (h: string, m: string, s: string, ms: string): number =>
+      (+h * 3600 + +m * 60 + +s) * 1000 + +ms;
+
+    const startMs = toMs(tsMatch[1], tsMatch[2], tsMatch[3], tsMatch[4]);
+    const endMs = toMs(tsMatch[5], tsMatch[6], tsMatch[7], tsMatch[8]);
+
+    const text = lines
+      .slice(tsLineIdx + 1)
+      .join(" ")
+      .replace(/<[^>]*>/g, "") // strip HTML tags
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (text.length === 0) continue;
+
+    segments.push({
+      text,
+      offset: startMs / 1000,
+      duration: (endMs - startMs) / 1000,
+      lang,
+    });
+  }
+
+  return segments;
+}
+
+/**
+ * Primary transcript method: invoke `yt-dlp` to download English subtitles
+ * (manual first, then auto-generated) and parse the resulting SRT file.
+ *
+ * Writes to a per-call temp directory so concurrent jobs cannot collide.
+ * Times out after 30 s. If `yt-dlp` is not on PATH (ENOENT), throws
+ * immediately so the caller can skip to the next fallback method.
+ */
+async function fetchTranscriptViaYtDlp(
+  videoId: string
+): Promise<TranscriptSegment[]> {
+  const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "yt-transcript-"));
+
+  try {
+    console.log(`[Transcript] yt-dlp fetching subtitles for ${videoId}...`);
+
+    await execFileAsync(
+      "yt-dlp",
+      [
+        "--skip-download",
+        "--write-subs",
+        "--write-auto-subs",
+        "--sub-lang",
+        "en",
+        "--sub-format",
+        "ttml",
+        "--convert-subs",
+        "srt",
+        "-o",
+        path.join(tmpDir, "t.%(ext)s"),
+        videoUrl,
+      ],
+      { timeout: 30_000 }
+    );
+
+    // yt-dlp may produce e.g. t.en.srt, t.en-US.srt, or t.en-orig.srt
+    const files = await readdir(tmpDir);
+    const srtFile = files.find((f) => f.endsWith(".srt"));
+    if (!srtFile) {
+      throw new Error(
+        `yt-dlp produced no SRT file for ${videoId} (files: ${files.join(", ") || "none"})`
+      );
+    }
+
+    const srtContent = await readFile(path.join(tmpDir, srtFile), "utf-8");
+    // Detect the language code from the filename (e.g. t.en.srt → "en")
+    const langMatch = srtFile.match(/\.([a-z]{2}(?:-[A-Za-z0-9-]+)?)?\.srt$/);
+    const lang = langMatch?.[1] ?? "en";
+
+    const segments = parseSrt(srtContent, lang);
+    if (segments.length === 0) {
+      throw new Error(`yt-dlp SRT parsed to 0 segments for ${videoId}`);
+    }
+
+    const charCount = segments.reduce((sum, s) => sum + s.text.length, 0);
+    console.log(
+      `[Transcript] Success (yt-dlp) for ${videoId}: ${segments.length} segment(s), ~${charCount} chars`
+    );
+    return segments;
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 // ─── Primary method: ytInitialPlayerResponse scraper ─────────────────────────
@@ -422,6 +557,12 @@ async function fetchTranscriptViaInnerTube(
  * Fetch a transcript for the given YouTube URL or video ID.
  *
  * Strategy (tried in order, first success wins):
+ *   0. yt-dlp            — invokes the `yt-dlp` CLI to download subtitles
+ *                          (manual then auto-generated) in SRT format and
+ *                          parses them locally.  Most reliable from server IPs
+ *                          as yt-dlp bundles its own bot-mitigation workarounds
+ *                          and receives frequent YouTube-compatibility updates.
+ *                          Skipped (falls through) if `yt-dlp` is not on PATH.
  *   1. HTML scraper      — fetches ytInitialPlayerResponse from the watch page,
  *                          extracts captionTracks, downloads JSON3 timedtext.
  *   2. InnerTube /player — POSTs to /youtubei/v1/player with IOS then ANDROID
@@ -449,6 +590,17 @@ export const transcribeVideo = async (
   );
 
   const errors: string[] = [];
+
+  // ── Method 0: yt-dlp CLI ──────────────────────────────────────────────────
+  try {
+    const segments = await fetchTranscriptViaYtDlp(videoId);
+    return segments;
+  } catch (ytDlpError) {
+    const errMsg =
+      ytDlpError instanceof Error ? ytDlpError.message : String(ytDlpError);
+    console.warn(`[Transcript] yt-dlp failed for ${videoId}: ${errMsg}`);
+    errors.push(`yt-dlp: ${errMsg}`);
+  }
 
   // ── Method 1: HTML scraper (ytInitialPlayerResponse) ─────────────────────
   try {
