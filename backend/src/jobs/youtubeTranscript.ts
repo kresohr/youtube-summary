@@ -200,6 +200,12 @@ async function fetchTranscriptViaYtDlp(
         "ttml",
         "--convert-subs",
         "srt",
+        // tv_simply and tv clients do not require PO tokens or account cookies,
+        // which makes them the most reliable choice for subtitle-only extraction
+        // from datacenter IPs without any login. Fall back to default (web) if
+        // both Smart TV clients fail (e.g. for age-restricted content).
+        "--extractor-args",
+        "youtube:player_client=tv_simply,tv,default",
         "-o",
         path.join(tmpDir, "t.%(ext)s"),
         ...cookieArgs,
