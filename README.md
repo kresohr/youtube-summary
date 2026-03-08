@@ -1,22 +1,21 @@
 # YouTube Video Summary Automation System
 
-Automated system that fetches the latest videos from configured YouTube channels, extracts transcripts, generates AI-powered summaries via OpenRouter, and displays them on a responsive web interface. Runs as a daily cron job inside Docker.
+Automated system that fetches the latest videos from configured YouTube channels, generates AI-powered summaries via Gemini CLI, and displays them on a responsive web interface. Runs as a daily cron job inside Docker.
 
 _Warning: This project was 'vibecoded' with guided assistance and personal architecture choosing from my side. Make sure you double-check all security related stuff if you plan to use it for production._
 
 ## Tech Stack
 
-| Layer                | Technology                                                                                  |
-| -------------------- | ------------------------------------------------------------------------------------------- |
-| **Frontend**         | Vue.js 3 + TypeScript, Vite, Vue Router, Axios                                              |
-| **Backend**          | Express.js 5 + TypeScript (Node 22), node-cron                                              |
-| **Database**         | PostgreSQL 16 (raw SQL via `pg` driver)                                                     |
-| **Transcripts**      | Custom extractor — 3-method waterfall (see [Transcript Extraction](#transcript-extraction)) |
-| **Headless browser** | Puppeteer + puppeteer-extra + puppeteer-extra-plugin-stealth (Method 3 only)                |
-| **AI Summaries**     | OpenRouter API (free model tier available)                                                  |
-| **Auth**             | JWT (jsonwebtoken) + bcrypt                                                                 |
-| **Containerization** | Docker + Docker Compose                                                                     |
-| **Reverse Proxy**    | Nginx (production only, with Let's Encrypt SSL)                                             |
+| Layer                | Technology                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------ |
+| **Frontend**         | Vue.js 3 + TypeScript, Vite, Vue Router, Axios                                             |
+| **Backend**          | Express.js 5 + TypeScript (Node 22), node-cron                                             |
+| **Database**         | PostgreSQL 16 (raw SQL via `pg` driver)                                                    |
+| **Transcripts**      | `yt-dlp` CLI (Tier 2 / Tier 3 fallback transcript extraction)                              |
+| **AI Summaries**     | Gemini CLI (primary, multimodal) → yt-dlp + Gemini (Tier 2) → OpenRouter (Tier 3 fallback) |
+| **Auth**             | JWT (jsonwebtoken) + bcrypt                                                                |
+| **Containerization** | Docker + Docker Compose                                                                    |
+| **Reverse Proxy**    | Nginx (production only, with Let's Encrypt SSL)                                            |
 
 ## Project Structure
 
@@ -46,10 +45,10 @@ youtube-summary/
 │       │   ├── videos.ts     # GET  /api/videos (public)
 │       │   └── admin.ts      # POST /api/admin/trigger-fetch (protected)
 │       └── jobs/
-│           ├── fetchVideos.ts       # Orchestrates fetch → transcript → summary → save
-│           ├── fetchSingleVideo.ts  # On-demand single-video summarisation (job queue)
-│           ├── youtubeTranscript.ts # Transcript extraction — Methods 1 (scraper) & 2 (InnerTube)
-│           └── headlessBrowser.ts  # Transcript extraction — Method 3 (stealth Chromium)
+│           ├── fetchVideos.ts        # Orchestrates fetch → three-tier summary → save
+│           ├── fetchSingleVideo.ts   # On-demand single-video summarisation (job queue)
+│           ├── geminiSummary.ts      # Gemini CLI invocation (Tier 1 direct URL, Tier 2 transcript)
+│           └── youtubeTranscript.ts  # yt-dlp transcript extraction (Tier 2 / Tier 3 input)
 │
 ├── frontend/
 │   ├── Dockerfile            # Multi-stage: Vite build → Nginx static server
@@ -77,7 +76,9 @@ youtube-summary/
 
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) (v2+)
 - A [YouTube Data API v3](https://console.cloud.google.com/apis/library/youtube.googleapis.com) key
-- An [OpenRouter](https://openrouter.ai/) API key
+- A [Gemini API key](https://aistudio.google.com/app/apikey) from Google AI Studio (free tier available)
+- An [OpenRouter](https://openrouter.ai/) API key (optional — Tier 3 last-resort fallback only)
+- [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) installed on the host / in the Docker image
 
 ## Environment Variables
 
@@ -87,21 +88,22 @@ Copy `.env.example` to `.env` and fill in the values:
 cp .env.example .env
 ```
 
-| Variable             | Description                                                      | Required |
-| -------------------- | ---------------------------------------------------------------- | -------- |
-| `DB_USER`            | PostgreSQL username                                              | ✅       |
-| `DB_PASSWORD`        | PostgreSQL password                                              | ✅       |
-| `DB_NAME`            | PostgreSQL database name                                         | ✅       |
-| `JWT_SECRET`         | Secret for JWT tokens — generate with `openssl rand -base64 32`  | ✅       |
-| `YOUTUBE_API_KEY`    | YouTube Data API v3 key                                          | ✅       |
-| `OPENROUTER_API_KEY` | OpenRouter API key for AI summaries                              | ✅       |
-| `APP_URL`            | Public URL of the app (e.g. `https://yourdomain.com`)            | ✅       |
-| `CORS_ORIGIN`        | Allowed frontend origin for CORS (e.g. `https://yourdomain.com`) | ✅       |
-| `NODE_ENV`           | `production` or `development`                                    | ✅       |
-| `PORT`               | Backend port inside the container (default `4000`)               | ❌       |
-| `HTTP_PORT`          | Host HTTP port for Nginx (default `80`, production only)         | ❌       |
-| `HTTPS_PORT`         | Host HTTPS port for Nginx (default `443`, production only)       | ❌       |
-| `SSL_CERT_PATH`      | Path to Let's Encrypt certs (default `/etc/letsencrypt`)         | ❌       |
+| Variable             | Description                                                                                                                                   | Required |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| `DB_USER`            | PostgreSQL username                                                                                                                           | ✅       |
+| `DB_PASSWORD`        | PostgreSQL password                                                                                                                           | ✅       |
+| `DB_NAME`            | PostgreSQL database name                                                                                                                      | ✅       |
+| `JWT_SECRET`         | Secret for JWT tokens — generate with `openssl rand -base64 32`                                                                               | ✅       |
+| `YOUTUBE_API_KEY`    | YouTube Data API v3 key — used for channel/video discovery and metadata                                                                       | ✅       |
+| `GEMINI_API_KEY`     | Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey) — drives Tier 1 (direct URL) and Tier 2 (transcript) summaries | ✅       |
+| `OPENROUTER_API_KEY` | OpenRouter API key — Tier 3 last-resort fallback. Completely optional if `GEMINI_API_KEY` is set.                                             | ❌       |
+| `APP_URL`            | Public URL of the app (e.g. `https://yourdomain.com`)                                                                                         | ✅       |
+| `CORS_ORIGIN`        | Allowed frontend origin for CORS (e.g. `https://yourdomain.com`)                                                                              | ✅       |
+| `NODE_ENV`           | `production` or `development`                                                                                                                 | ✅       |
+| `PORT`               | Backend port inside the container (default `4000`)                                                                                            | ❌       |
+| `HTTP_PORT`          | Host HTTP port for Nginx (default `80`, production only)                                                                                      | ❌       |
+| `HTTPS_PORT`         | Host HTTPS port for Nginx (default `443`, production only)                                                                                    | ❌       |
+| `SSL_CERT_PATH`      | Path to Let's Encrypt certs (default `/etc/letsencrypt`)                                                                                      | ❌       |
 
 ## Quick Start — Local Development
 
@@ -115,7 +117,7 @@ git clone <your-repo-url> youtube-summary
 cd youtube-summary
 cp .env.example .env
 # Edit .env — fill in DB_USER, DB_PASSWORD, DB_NAME, JWT_SECRET,
-#              YOUTUBE_API_KEY, OPENROUTER_API_KEY
+#              YOUTUBE_API_KEY, GEMINI_API_KEY
 #              Set NODE_ENV=development
 
 # 2. Start all services
@@ -257,9 +259,8 @@ Each run:
 1. Queries all configured YouTube channels from the database
 2. Fetches videos published in the last 24 hours via the YouTube Data API
 3. Skips videos already in the database
-4. Extracts transcripts using the 3-method waterfall (see [Transcript Extraction](#transcript-extraction))
-5. Generates summaries via the OpenRouter API
-6. Saves video metadata and summary to PostgreSQL
+4. Runs the three-tier summary cascade (see [Summary Pipeline](#summary-pipeline))
+5. Saves video metadata and summary to PostgreSQL
 
 You can also trigger a fetch manually from the Admin Dashboard.
 
@@ -307,18 +308,25 @@ The database is initialized automatically by `backend/init.sql` when the Postgre
 - `youtube_channels` — tracked YouTube channels
 - `videos` — fetched videos with AI-generated summaries, linked to channels via `channel_id`
 
-## Transcript Extraction
+## Summary Pipeline
 
-Transcripts are fetched with a custom, dependency-free waterfall — each method is tried in order and the first success wins:
+Each video goes through a three-tier cascade — the first tier that succeeds is used:
 
-| Method                          | Mechanism                                                                                                                                                                                                                                                                                                                        | Notes                                                                                                |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| **1 — HTML scraper**            | Fetches the YouTube watch page, extracts `ytInitialPlayerResponse` using a bracket-depth parser, downloads the best caption track as JSON3 timedtext                                                                                                                                                                             | Fastest; fails when YouTube's bot-mitigation returns an empty timedtext body                         |
-| **2 — InnerTube `/player` API** | POSTs to `/youtubei/v1/player` as an IOS then ANDROID mobile client                                                                                                                                                                                                                                                              | Bypasses the `UNPLAYABLE` status that WEB clients receive from datacenter IPs; includes retry-on-400 |
-| **3 — Stealth Chromium**        | Launches a real Chromium instance patched with `puppeteer-extra-plugin-stealth` (17+ fingerprint patches: `navigator.webdriver`, canvas, WebGL, plugins, etc.), restores persisted session cookies, then captures captions via: **(A)** network response interception or **(B)** in-page `fetch()` with `credentials: "include"` | Last resort; slowest (~15–30 s); saves cookies to `backend/data/yt-cookies.json` across runs         |
+| Tier                    | Method                                                                                     | How it works                                                                                       | Requires                            |
+| ----------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| **1 — Gemini direct**   | Gemini CLI receives the YouTube URL                                                        | Gemini processes the video natively via multimodal understanding — no transcript extraction needed | `GEMINI_API_KEY`                    |
+| **2 — yt-dlp + Gemini** | `yt-dlp` extracts transcript → Gemini CLI summarises it                                    | Used when Tier 1 fails (e.g. very new videos not yet indexed by Gemini)                            | `GEMINI_API_KEY` + `yt-dlp` on PATH |
+| **3 — OpenRouter**      | Best available text (yt-dlp transcript or video description) sent to OpenRouter free model | Last resort when Gemini is unavailable                                                             | `OPENROUTER_API_KEY`                |
 
-> ⚠️ **Legal notice — Method 3 (headless browser):**  
-> Automating a browser to interact with YouTube **might** violate [YouTube's Terms of Service](https://www.youtube.com/t/terms) (section 5-B, which prohibits circumventing technical measures and automated access without authorisation). **Read the YouTube ToS carefully before enabling or deploying Method 3.** This code is provided strictly for educational purposes — to demonstrate how headless browser fingerprint evasion works so that developers building their own video streaming platforms can understand and guard against it.
+If all tiers fail the video is queued in `pending_videos` for one automatic retry on the next cron run.
+
+### Getting a Gemini API Key
+
+1. Go to [Google AI Studio → API Keys](https://aistudio.google.com/app/apikey)
+2. Click **Create API key**
+3. Copy the key and set `GEMINI_API_KEY=<your-key>` in `.env`
+
+The free tier provides generous quota for video summarization. No credit card required.
 
 ## License
 
