@@ -2,8 +2,7 @@ import { randomUUID } from "crypto";
 import { query } from "../lib/db.js";
 import { extractVideoId, LoginRequiredError } from "./youtubeTranscript.js";
 import {
-  getTranscriptFromYouTube,
-  generateSummaryWithOpenRouter,
+  getVideoSummaryForVideo,
   fetchVideoDurations,
 } from "./fetchVideos.js";
 
@@ -94,16 +93,12 @@ async function fetchVideoMetadata(
     );
   }
 
-  // ── Quota-free fallback: scrape Open Graph tags from the watch page ───────
-  //
-  // YouTube embeds og:title, og:image and datePublished (as a JSON-LD script)
-  // in every public watch page.  No API key or quota required.
   return fetchVideoMetadataFromPage(videoId);
 }
 
 /**
  * Scrape video metadata from the YouTube watch page using Open Graph tags
- * and JSON-LD structured data.  Uses zero YouTube Data API quota.
+ * and JSON-LD structured data. Uses zero YouTube Data API quota.
  */
 async function fetchVideoMetadataFromPage(
   videoId: string
@@ -130,13 +125,10 @@ async function fetchVideoMetadataFromPage(
 
     const html = await res.text();
 
-    // og:title  →  <meta property="og:title" content="…">
     const titleMatch =
       html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/i) ??
       html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:title"/i);
 
-    // Fallback: <title>Video Title - YouTube</title>  (always present, even on
-    // consent/redirect pages the server may return instead of the watch page).
     const titleTagMatch = html.match(/<title>([^<]+)<\/title>/i);
     const titleTagRaw = titleTagMatch
       ? titleTagMatch[1].replace(/\s*[-–|]\s*YouTube\s*$/i, "").trim()
@@ -148,7 +140,6 @@ async function fetchVideoMetadataFromPage(
         ? decodeHtmlEntities(titleTagRaw)
         : `Video ${videoId}`;
 
-    // og:image  →  <meta property="og:image" content="…">
     const thumbMatch =
       html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/i) ??
       html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:image"/i);
@@ -156,7 +147,6 @@ async function fetchVideoMetadataFromPage(
       ? thumbMatch[1]
       : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
-    // datePublished from JSON-LD  →  "datePublished":"2024-05-01"
     const dateMatch = html.match(/"datePublished"\s*:\s*"([^"]+)"/);
     const publishedAt = dateMatch
       ? new Date(dateMatch[1]).toISOString()
@@ -172,7 +162,6 @@ async function fetchVideoMetadataFromPage(
   }
 }
 
-/** Decode common HTML entities in scraped attribute values. */
 function decodeHtmlEntities(str: string): string {
   return str
     .replace(/&amp;/g, "&")
@@ -183,7 +172,12 @@ function decodeHtmlEntities(str: string): string {
     .replace(/&apos;/g, "'");
 }
 
-/** Process a single video: transcript → summary → DB insert */
+/**
+ * Process a single video: run the three-tier summary cascade → DB insert.
+ * Tier 1: Gemini CLI direct URL
+ * Tier 2: yt-dlp transcript → Gemini CLI
+ * Tier 3: yt-dlp transcript / description → OpenRouter
+ */
 async function processSingleVideo(
   jobId: string,
   videoUrl: string,
@@ -195,12 +189,10 @@ async function processSingleVideo(
     );
 
     // 1. Check for duplicate
-    console.log(`[SingleVideo] Step 1: Checking for duplicate...`);
     const existing = await query("SELECT id FROM videos WHERE video_id = $1", [
       videoId,
     ]);
     if (existing.rows.length > 0) {
-      console.log(`[SingleVideo] Duplicate found for ${videoId}, aborting.`);
       jobs.set(jobId, {
         status: "error",
         error: "This video has already been summarized.",
@@ -210,10 +202,8 @@ async function processSingleVideo(
     }
 
     // 2. Fetch metadata (title, thumbnail, publishedAt)
-    console.log(`[SingleVideo] Step 2: Fetching metadata...`);
     const metadata = await fetchVideoMetadata(videoId);
     if (!metadata) {
-      console.error(`[SingleVideo] Metadata fetch failed for ${videoId}`);
       jobs.set(jobId, {
         status: "error",
         error: "Could not fetch video metadata from YouTube. Check the URL.",
@@ -224,58 +214,45 @@ async function processSingleVideo(
     console.log(`[SingleVideo] Metadata OK: "${metadata.title}"`);
 
     // 3. Fetch duration
-    console.log(`[SingleVideo] Step 3: Fetching duration...`);
     const durationsMap = await fetchVideoDurations([videoId]);
     const durationSeconds = durationsMap.get(videoId) ?? null;
     console.log(
       `[SingleVideo] Duration: ${durationSeconds !== null ? `${durationSeconds}s` : "unknown"}`
     );
 
-    // 4. Fetch transcript
-    console.log(`[SingleVideo] Step 4: Fetching transcript...`);
-    let transcript: string | null = null;
+    // 4. Three-tier summary cascade
+    //    (Gemini direct URL → yt-dlp + Gemini → yt-dlp/desc + OpenRouter)
+    console.log(
+      `[SingleVideo] Step 4: Running summary cascade for ${videoId}...`
+    );
+    let summary: string | null = null;
     try {
-      transcript = await getTranscriptFromYouTube(videoId);
-    } catch (transcriptError) {
-      if (transcriptError instanceof LoginRequiredError) {
-        console.error(
-          `[SingleVideo] Login-required for ${videoId}: ${transcriptError.message}`
-        );
+      summary = await getVideoSummaryForVideo(videoId, metadata.title, null);
+    } catch (err) {
+      if (err instanceof LoginRequiredError) {
         jobs.set(jobId, {
           status: "error",
           error:
-            "This video is age-restricted or login-gated. YouTube requires sign-in to access its transcript, which this service does not support.",
+            "This video is age-restricted or login-gated. YouTube requires sign-in to access its content.",
         });
         scheduleCleanup(jobId);
         return;
       }
-      throw transcriptError;
+      throw err;
     }
-    console.log(
-      `[SingleVideo] Transcript result: ${transcript ? `${transcript.length} chars` : "null"}`
-    );
-    if (!transcript || transcript.length < 100) {
-      console.error(
-        `[SingleVideo] Transcript too short or missing for ${videoId}`
-      );
+
+    if (!summary) {
       jobs.set(jobId, {
         status: "error",
         error:
-          "Could not fetch transcript for this video. It may not have captions available.",
+          "Could not generate a summary for this video. It may not have captions or be accessible to Gemini.",
       });
       scheduleCleanup(jobId);
       return;
     }
+    console.log(`[SingleVideo] Summary: ${summary.length} chars`);
 
-    // 5. Generate summary
-    console.log(`[SingleVideo] Step 5: Generating summary...`);
-    const summary = await generateSummaryWithOpenRouter(
-      transcript,
-      metadata.title
-    );
-    console.log(`[SingleVideo] Summary generated: ${summary.length} chars`);
-
-    // 6. Insert into DB
+    // 5. Insert into DB
     const result = await query(
       `INSERT INTO videos (id, video_id, title, thumbnail, summary, video_url, published_at, fetched_at, channel_id, duration_seconds)
        VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW(), $7, $8)
@@ -334,7 +311,6 @@ export function startSingleVideoJob(videoUrl: string): {
   const jobId = randomUUID();
   jobs.set(jobId, { status: "pending" });
 
-  // Fire-and-forget — runs in background
   processSingleVideo(jobId, videoUrl, videoId).catch((err) => {
     console.error(`[SingleVideo] Unhandled error in job ${jobId}:`, err);
     jobs.set(jobId, {

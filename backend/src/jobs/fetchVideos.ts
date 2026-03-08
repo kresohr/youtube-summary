@@ -1,5 +1,9 @@
 import { query } from "../lib/db.js";
 import { transcribeVideo, LoginRequiredError } from "./youtubeTranscript.js";
+import {
+  summarizeVideoWithGemini,
+  summarizeTranscriptWithGemini,
+} from "./geminiSummary.js";
 
 interface YouTubeVideoItem {
   id: { videoId: string };
@@ -69,9 +73,7 @@ export async function fetchVideoDurations(
   return map;
 }
 
-/**
- * Fetch latest videos from a YouTube channel published in the last N hours.
- */
+/** Fetch latest videos from a YouTube channel published in the last N hours. */
 async function fetchLatestVideos(
   channelId: string,
   hoursAgo: number
@@ -121,7 +123,6 @@ async function fetchLatestVideos(
     })
   );
 
-  // Batch-fetch durations for all videos in a single API call
   const durationsMap = await fetchVideoDurations(parsed.map((v) => v.id));
 
   return parsed.map((v) => ({
@@ -131,7 +132,9 @@ async function fetchLatestVideos(
 }
 
 /**
- * Get transcript from YouTube via youtube-transcript-plus.
+ * Fetch transcript from YouTube via yt-dlp.
+ * Returns the full transcript text, or null if unavailable.
+ * Rethrows LoginRequiredError so callers can skip sign-in-gated videos.
  */
 export async function getTranscriptFromYouTube(
   videoId: string
@@ -148,16 +151,12 @@ export async function getTranscriptFromYouTube(
       return null;
     }
 
-    console.log(
-      `[GetTranscript] Got ${transcriptSegments.length} segment(s) for ${videoId}`
-    );
-
     const fullText = transcriptSegments
       .map((segment: { text: string }) => segment.text)
       .join(" ");
 
     console.log(
-      `[GetTranscript] Joined transcript for ${videoId}: ${fullText.length} chars`
+      `[GetTranscript] Transcript for ${videoId}: ${fullText.length} chars`
     );
     return fullText;
   } catch (error) {
@@ -166,15 +165,13 @@ export async function getTranscriptFromYouTube(
     console.error(
       `[GetTranscript] FAILED for ${videoId} [${errName}]: ${errMsg}`
     );
-    // Re-throw login-required errors so callers can surface a clear message
-    // instead of silently treating this as "no transcript available".
     if (error instanceof LoginRequiredError) throw error;
     return null;
   }
 }
 
 /**
- * Generate a summary using OpenRouter API with a free model.
+ * Generate a summary using OpenRouter API — last-resort Tier 3 fallback.
  */
 export async function generateSummaryWithOpenRouter(
   transcript: string,
@@ -187,7 +184,6 @@ export async function generateSummaryWithOpenRouter(
       return transcript.substring(0, 300) + "...";
     }
 
-    // Truncate transcript if too long
     const maxChars = 8000;
     const truncatedTranscript =
       transcript.length > maxChars
@@ -205,7 +201,7 @@ export async function generateSummaryWithOpenRouter(
           "X-Title": "YouTube Summary System",
         },
         body: JSON.stringify({
-          model: "openrouter/free", // Free Model
+          model: "openrouter/free",
           messages: [
             {
               role: "system",
@@ -262,8 +258,91 @@ Rules:
   }
 }
 
-/** Retry pending videos that previously had no transcript. One retry allowed;
- *  if still no transcript after the second attempt, the video is discarded. */
+/**
+ * Three-tier summary cascade for a single video.
+ *
+ * Tier 1 — Gemini CLI receives the YouTube URL directly (multimodal). Gemini
+ *           processes the video natively — no transcript extraction needed.
+ *           Fastest and highest quality when GEMINI_API_KEY is set.
+ *
+ * Tier 2 — yt-dlp extracts transcript → Gemini CLI summarises the text.
+ *           Used when Tier 1 fails (e.g. very new video not yet indexed).
+ *
+ * Tier 3 — OpenRouter free model with the best available text (yt-dlp
+ *           transcript or video description). Last resort.
+ *
+ * Returns null when no usable content is found — caller should enqueue the
+ * video to pending_videos for a later retry, or discard it.
+ *
+ * Rethrows LoginRequiredError so callers can skip sign-in-gated videos.
+ */
+export async function getVideoSummaryForVideo(
+  videoId: string,
+  title: string,
+  description: string | null
+): Promise<string | null> {
+  const videoUrl = `https://youtube.com/watch?v=${videoId}`;
+  const hasGemini = Boolean(process.env.GEMINI_API_KEY);
+
+  // ── Tier 1: Gemini CLI — direct YouTube URL ───────────────────────────────
+  if (hasGemini) {
+    try {
+      console.log(`[Summary] Tier 1 (Gemini direct) for ${videoId}...`);
+      const summary = await summarizeVideoWithGemini(videoUrl);
+      console.log(
+        `[Summary] Tier 1 succeeded for ${videoId}: ${summary.length} chars`
+      );
+      return summary;
+    } catch (err) {
+      console.warn(
+        `[Summary] Tier 1 failed for ${videoId}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  // ── Fetch transcript via yt-dlp (shared input for Tiers 2 & 3) ───────────
+  let transcript: string | null = null;
+  try {
+    transcript = await getTranscriptFromYouTube(videoId);
+  } catch (err) {
+    if (err instanceof LoginRequiredError) throw err;
+    // yt-dlp unavailable or no subtitles — continue to description fallback
+  }
+
+  // ── Tier 2: yt-dlp transcript → Gemini CLI ────────────────────────────────
+  if (transcript && transcript.length >= 100 && hasGemini) {
+    try {
+      console.log(`[Summary] Tier 2 (yt-dlp + Gemini) for ${videoId}...`);
+      const summary = await summarizeTranscriptWithGemini(transcript, title);
+      console.log(
+        `[Summary] Tier 2 succeeded for ${videoId}: ${summary.length} chars`
+      );
+      return summary;
+    } catch (err) {
+      console.warn(
+        `[Summary] Tier 2 failed for ${videoId}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  // ── Tier 3: OpenRouter with best available text ───────────────────────────
+  const bestText =
+    transcript && transcript.length >= 100
+      ? transcript
+      : description && description.length >= 100
+        ? description
+        : null;
+
+  if (bestText) {
+    console.log(`[Summary] Tier 3 (OpenRouter) for ${videoId}...`);
+    return generateSummaryWithOpenRouter(bestText, title);
+  }
+
+  // No usable content found
+  return null;
+}
+
+/** Retry pending videos that previously had no usable content. */
 async function processPendingVideos(): Promise<void> {
   const pendingResult = await query(
     "SELECT * FROM pending_videos ORDER BY added_at ASC",
@@ -279,14 +358,18 @@ async function processPendingVideos(): Promise<void> {
   for (const row of pending) {
     try {
       console.log(
-        `[Pending] Attempting transcript for "${row.title}" (${row.video_id}), retry_count=${row.retry_count}`
+        `[Pending] Retrying "${row.title}" (${row.video_id}), retry_count=${row.retry_count}`
       );
-      let transcript: string | null = null;
+
+      let summary: string | null = null;
       try {
-        transcript = await getTranscriptFromYouTube(row.video_id);
-      } catch (transcriptError) {
-        if (transcriptError instanceof LoginRequiredError) {
-          // Sign-in-gated — retrying will never help; discard immediately.
+        summary = await getVideoSummaryForVideo(
+          row.video_id,
+          row.title,
+          row.description
+        );
+      } catch (err) {
+        if (err instanceof LoginRequiredError) {
           console.warn(
             `[Pending] Discarding login-required video "${row.title}" (${row.video_id}): sign-in-gated`
           );
@@ -295,40 +378,29 @@ async function processPendingVideos(): Promise<void> {
           ]);
           continue;
         }
-        throw transcriptError;
+        throw err;
       }
-      console.log(
-        `[Pending] Transcript result for ${row.video_id}: ${transcript ? `${transcript.length} chars` : "null"}`
-      );
 
-      if (!transcript || transcript.length < 100) {
-        // Still no transcript
+      if (!summary) {
         if (row.retry_count >= 1) {
-          // Second failure — discard
           console.log(
-            `  Discarding pending video (no transcript after retry): ${row.title}`
+            `[Pending] Discarding "${row.title}" — no content after retry`
           );
           await query("DELETE FROM pending_videos WHERE video_id = $1", [
             row.video_id,
           ]);
         } else {
-          // First failure — increment retry counter for the next run
           await query(
             "UPDATE pending_videos SET retry_count = retry_count + 1 WHERE video_id = $1",
             [row.video_id]
           );
           console.log(
-            `  No transcript yet for "${row.title}", will retry next run.`
+            `[Pending] No content yet for "${row.title}", will retry next run.`
           );
         }
         continue;
       }
 
-      // We have a transcript — generate summary and move to videos table
-      const summary = await generateSummaryWithOpenRouter(
-        transcript,
-        row.title
-      );
       await query(
         `INSERT INTO videos (id, video_id, title, thumbnail, summary, video_url, published_at, fetched_at, channel_id, duration_seconds)
          VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW(), $7, $8)
@@ -347,10 +419,10 @@ async function processPendingVideos(): Promise<void> {
       await query("DELETE FROM pending_videos WHERE video_id = $1", [
         row.video_id,
       ]);
-      console.log(`  ✓ Processed pending video: ${row.title}`);
+      console.log(`[Pending] ✓ Processed: ${row.title}`);
     } catch (error) {
       console.error(
-        `Error processing pending video ${row.title}:`,
+        `[Pending] Error processing ${row.title}:`,
         error instanceof Error ? error.message : "Unknown error"
       );
     }
@@ -358,9 +430,8 @@ async function processPendingVideos(): Promise<void> {
 }
 
 /**
- * Main function: fetch latest videos from channels of a given category, extract transcripts,
- * generate summaries, and store in database.
- * @param categoryFilter - Only process channels with this category (defaults to 'main')
+ * Main cron function: fetch latest videos from channels, summarize, and store.
+ * @param categoryFilter - Only process channels with this category (default: 'main')
  */
 export async function fetchAndSummarizeVideos(
   categoryFilter: string = "main"
@@ -388,13 +459,10 @@ export async function fetchAndSummarizeVideos(
         `[${new Date().toISOString()}] Processing channel: ${channel.channel_name}`
       );
 
-      // Fetch latest videos from YouTube API (last 24 hours)
       const videos = await fetchLatestVideos(channel.channel_id, 24);
-
       console.log(`  Found ${videos.length} videos in last 24h`);
 
       for (const video of videos) {
-        // Skip if already in the videos table or already queued in pending_videos
         const [existsInVideos, existsInPending] = await Promise.all([
           query("SELECT id FROM videos WHERE video_id = $1", [video.id]),
           query("SELECT id FROM pending_videos WHERE video_id = $1", [
@@ -409,30 +477,27 @@ export async function fetchAndSummarizeVideos(
           continue;
         }
 
-        console.log(`  Processing video: ${video.title} (${video.id})`);
+        console.log(`  Processing: ${video.title} (${video.id})`);
 
-        console.log(`  [Cron] Fetching transcript for ${video.id}...`);
-        let transcript: string | null = null;
+        let summary: string | null = null;
         try {
-          transcript = await getTranscriptFromYouTube(video.id);
-        } catch (transcriptError) {
-          if (transcriptError instanceof LoginRequiredError) {
+          summary = await getVideoSummaryForVideo(
+            video.id,
+            video.title,
+            video.description
+          );
+        } catch (err) {
+          if (err instanceof LoginRequiredError) {
             console.warn(
-              `  [Cron] Skipping login-required video "${video.title}" (${video.id}): sign-in-gated`
+              `  Skipping login-required video "${video.title}" (${video.id})`
             );
             continue;
           }
-          throw transcriptError;
+          throw err;
         }
-        console.log(
-          `  [Cron] Transcript result for ${video.id}: ${transcript ? `${transcript.length} chars` : "null"}`
-        );
 
-        if (!transcript || transcript.length < 100) {
-          // No transcript — queue for later retry instead of falling back to description
-          console.log(
-            `  No transcript for "${video.title}", adding to pending queue.`
-          );
+        if (!summary) {
+          console.log(`  No content for "${video.title}" — queuing for retry.`);
           await query(
             `INSERT INTO pending_videos (id, video_id, title, thumbnail, description, video_url, published_at, channel_id, duration_seconds)
              VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8)
@@ -451,13 +516,6 @@ export async function fetchAndSummarizeVideos(
           continue;
         }
 
-        // Generate summary using OpenRouter
-        const summary = await generateSummaryWithOpenRouter(
-          transcript,
-          video.title
-        );
-
-        // Save to database
         await query(
           `INSERT INTO videos (id, video_id, title, thumbnail, summary, video_url, published_at, fetched_at, channel_id, duration_seconds)
            VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, NOW(), $7, $8)`,
@@ -488,6 +546,5 @@ export async function fetchAndSummarizeVideos(
     `[${new Date().toISOString()}] Fetch job complete. Processed ${processedCount} new video(s).`
   );
 
-  // Process any pending videos that previously had no transcript
   await processPendingVideos();
 }
