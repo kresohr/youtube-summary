@@ -1,10 +1,11 @@
-import { randomUUID } from "crypto";
 import { query } from "../lib/db.js";
-import { extractVideoId, LoginRequiredError } from "./youtubeTranscript.js";
+import { extractVideoId } from "./geminiSummary.js";
 import {
   getVideoSummaryForVideo,
   fetchVideoDurations,
 } from "./fetchVideos.js";
+
+import { randomUUID } from "crypto";
 
 /** UUID of the sentinel "Standalone" channel row created by init.sql */
 export const MANUAL_CHANNEL_ID = "00000000-0000-0000-0000-000000000000";
@@ -173,10 +174,7 @@ function decodeHtmlEntities(str: string): string {
 }
 
 /**
- * Process a single video: run the three-tier summary cascade → DB insert.
- * Tier 1: Gemini CLI direct URL
- * Tier 2: yt-dlp transcript → Gemini CLI
- * Tier 3: yt-dlp transcript / description → OpenRouter
+ * Process a single video: summarise via Gemini → DB insert.
  */
 async function processSingleVideo(
   jobId: string,
@@ -220,32 +218,17 @@ async function processSingleVideo(
       `[SingleVideo] Duration: ${durationSeconds !== null ? `${durationSeconds}s` : "unknown"}`
     );
 
-    // 4. Three-tier summary cascade
-    //    (Gemini direct URL → yt-dlp + Gemini → yt-dlp/desc + OpenRouter)
+    // 4. Summarise via Gemini REST API
     console.log(
-      `[SingleVideo] Step 4: Running summary cascade for ${videoId}...`
+      `[SingleVideo] Step 4: Running Gemini summarisation for ${videoId}...`
     );
-    let summary: string | null = null;
-    try {
-      summary = await getVideoSummaryForVideo(videoId, metadata.title, null);
-    } catch (err) {
-      if (err instanceof LoginRequiredError) {
-        jobs.set(jobId, {
-          status: "error",
-          error:
-            "This video is age-restricted or login-gated. YouTube requires sign-in to access its content.",
-        });
-        scheduleCleanup(jobId);
-        return;
-      }
-      throw err;
-    }
+    const summary = await getVideoSummaryForVideo(videoId, metadata.title, null);
 
     if (!summary) {
       jobs.set(jobId, {
         status: "error",
         error:
-          "Could not generate a summary for this video. It may not have captions or be accessible to Gemini.",
+          "Could not generate a summary for this video. Gemini may not be able to access it.",
       });
       scheduleCleanup(jobId);
       return;

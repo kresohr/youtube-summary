@@ -1,9 +1,5 @@
 import { query } from "../lib/db.js";
-import { transcribeVideo, LoginRequiredError } from "./youtubeTranscript.js";
-import {
-  summarizeVideoWithGemini,
-  summarizeTranscriptWithGemini,
-} from "./geminiSummary.js";
+import { summarizeVideo } from "./geminiSummary.js";
 
 interface YouTubeVideoItem {
   id: { videoId: string };
@@ -132,214 +128,34 @@ async function fetchLatestVideos(
 }
 
 /**
- * Fetch transcript from YouTube via yt-dlp.
- * Returns the full transcript text, or null if unavailable.
- * Rethrows LoginRequiredError so callers can skip sign-in-gated videos.
- */
-export async function getTranscriptFromYouTube(
-  videoId: string
-): Promise<string | null> {
-  console.log(
-    `[GetTranscript] Starting transcript fetch for videoId: ${videoId}`
-  );
-  try {
-    const videoUrl = `https://youtube.com/watch?v=${videoId}`;
-    const transcriptSegments = await transcribeVideo(videoUrl);
-
-    if (!transcriptSegments || transcriptSegments.length === 0) {
-      console.warn(`[GetTranscript] No segments returned for ${videoId}`);
-      return null;
-    }
-
-    const fullText = transcriptSegments
-      .map((segment: { text: string }) => segment.text)
-      .join(" ");
-
-    console.log(
-      `[GetTranscript] Transcript for ${videoId}: ${fullText.length} chars`
-    );
-    return fullText;
-  } catch (error) {
-    const errName = error instanceof Error ? error.constructor.name : "Unknown";
-    const errMsg = error instanceof Error ? error.message : String(error);
-    console.error(
-      `[GetTranscript] FAILED for ${videoId} [${errName}]: ${errMsg}`
-    );
-    if (error instanceof LoginRequiredError) throw error;
-    return null;
-  }
-}
-
-/**
- * Generate a summary using OpenRouter API — last-resort Tier 3 fallback.
- */
-export async function generateSummaryWithOpenRouter(
-  transcript: string,
-  videoTitle: string
-): Promise<string> {
-  try {
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
-      console.error("OPENROUTER_API_KEY is not set");
-      return transcript.substring(0, 300) + "...";
-    }
-
-    const maxChars = 8000;
-    const truncatedTranscript =
-      transcript.length > maxChars
-        ? transcript.substring(0, maxChars) + "..."
-        : transcript;
-
-    const response = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": process.env.APP_URL || "https://gladansam.xyz/fetch",
-          "X-Title": "YouTube Summary System",
-        },
-        body: JSON.stringify({
-          model: "openrouter/free",
-          messages: [
-            {
-              role: "system",
-              content: `You are a helpful assistant that creates structured summaries of YouTube videos.
-You MUST always respond in valid Markdown using EXACTLY the following structure — no deviations, no extra sections, no plain text:
-
-## 📝 Overview
-A 2–4 sentence high-level description of what the video is about.
-
-## 🔑 Key Points
-- Bullet point 1
-- Bullet point 2
-- Bullet point 3
-(Add as many bullet points as needed to cover all important points.)
-
-## 💡 Key Takeaways
-- The most important insight or lesson from the video.
-- Additional takeaway if applicable.
-
-## 🏷️ Topics Covered
-- Topic 1
-- Topic 2
-- Topic 3
-
-Rules:
-- Always use the exact headings above (including emojis).
-- Use Markdown bullet lists (- ) under every section.
-- Do NOT add any text outside of these four sections.
-- Do NOT wrap your response in a code block.
-- The response must be valid Markdown that renders correctly.`,
-            },
-            {
-              role: "user",
-              content: `Summarize this YouTube video using the exact Markdown structure specified.\n\nTitle: ${videoTitle}\n\nTranscript:\n${truncatedTranscript}`,
-            },
-          ],
-          temperature: 0.7,
-        }),
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(
-        `OpenRouter API error: ${response.status} - ${errorText}`
-      );
-    }
-
-    const data = await response.json();
-    return data.choices[0].message.content.trim();
-  } catch (error) {
-    console.error("Error generating summary with OpenRouter:", error);
-    return transcript.substring(0, 300) + "...";
-  }
-}
-
-/**
- * Three-tier summary cascade for a single video.
+ * Summarise a single video via the Gemini REST API.
  *
- * Tier 1 — Gemini CLI receives the YouTube URL directly (multimodal). Gemini
- *           processes the video natively — no transcript extraction needed.
- *           Fastest and highest quality when GEMINI_API_KEY is set.
+ * Gemini processes the YouTube URL directly using multimodal understanding
+ * (audio + video) — no separate transcript extraction is needed.
  *
- * Tier 2 — yt-dlp extracts transcript → Gemini CLI summarises the text.
- *           Used when Tier 1 fails (e.g. very new video not yet indexed).
- *
- * Tier 3 — OpenRouter free model with the best available text (yt-dlp
- *           transcript or video description). Last resort.
- *
- * Returns null when no usable content is found — caller should enqueue the
- * video to pending_videos for a later retry, or discard it.
- *
- * Rethrows LoginRequiredError so callers can skip sign-in-gated videos.
+ * Returns null when Gemini fails — caller should enqueue the video to
+ * pending_videos for a later retry.
  */
 export async function getVideoSummaryForVideo(
   videoId: string,
-  title: string,
-  description: string | null
+  _title: string,
+  _description: string | null
 ): Promise<string | null> {
   const videoUrl = `https://youtube.com/watch?v=${videoId}`;
-  const hasGemini = Boolean(process.env.GEMINI_API_KEY);
 
-  // ── Tier 1: Gemini CLI — direct YouTube URL ───────────────────────────────
-  if (hasGemini) {
-    try {
-      console.log(`[Summary] Tier 1 (Gemini direct) for ${videoId}...`);
-      const summary = await summarizeVideoWithGemini(videoUrl);
-      console.log(
-        `[Summary] Tier 1 succeeded for ${videoId}: ${summary.length} chars`
-      );
-      return summary;
-    } catch (err) {
-      console.warn(
-        `[Summary] Tier 1 failed for ${videoId}: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  }
-
-  // ── Fetch transcript via yt-dlp (shared input for Tiers 2 & 3) ───────────
-  let transcript: string | null = null;
   try {
-    transcript = await getTranscriptFromYouTube(videoId);
+    console.log(`[Summary] Gemini summarisation for ${videoId}...`);
+    const summary = await summarizeVideo(videoUrl);
+    console.log(
+      `[Summary] Succeeded for ${videoId}: ${summary.length} chars`
+    );
+    return summary;
   } catch (err) {
-    if (err instanceof LoginRequiredError) throw err;
-    // yt-dlp unavailable or no subtitles — continue to description fallback
+    console.warn(
+      `[Summary] Failed for ${videoId}: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return null;
   }
-
-  // ── Tier 2: yt-dlp transcript → Gemini CLI ────────────────────────────────
-  if (transcript && transcript.length >= 100 && hasGemini) {
-    try {
-      console.log(`[Summary] Tier 2 (yt-dlp + Gemini) for ${videoId}...`);
-      const summary = await summarizeTranscriptWithGemini(transcript, title);
-      console.log(
-        `[Summary] Tier 2 succeeded for ${videoId}: ${summary.length} chars`
-      );
-      return summary;
-    } catch (err) {
-      console.warn(
-        `[Summary] Tier 2 failed for ${videoId}: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  }
-
-  // ── Tier 3: OpenRouter with best available text ───────────────────────────
-  const bestText =
-    transcript && transcript.length >= 100
-      ? transcript
-      : description && description.length >= 100
-        ? description
-        : null;
-
-  if (bestText) {
-    console.log(`[Summary] Tier 3 (OpenRouter) for ${videoId}...`);
-    return generateSummaryWithOpenRouter(bestText, title);
-  }
-
-  // No usable content found
-  return null;
 }
 
 /** Retry pending videos that previously had no usable content. */
@@ -361,25 +177,11 @@ async function processPendingVideos(): Promise<void> {
         `[Pending] Retrying "${row.title}" (${row.video_id}), retry_count=${row.retry_count}`
       );
 
-      let summary: string | null = null;
-      try {
-        summary = await getVideoSummaryForVideo(
-          row.video_id,
-          row.title,
-          row.description
-        );
-      } catch (err) {
-        if (err instanceof LoginRequiredError) {
-          console.warn(
-            `[Pending] Discarding login-required video "${row.title}" (${row.video_id}): sign-in-gated`
-          );
-          await query("DELETE FROM pending_videos WHERE video_id = $1", [
-            row.video_id,
-          ]);
-          continue;
-        }
-        throw err;
-      }
+      const summary = await getVideoSummaryForVideo(
+        row.video_id,
+        row.title,
+        row.description
+      );
 
       if (!summary) {
         if (row.retry_count >= 1) {
@@ -479,22 +281,11 @@ export async function fetchAndSummarizeVideos(
 
         console.log(`  Processing: ${video.title} (${video.id})`);
 
-        let summary: string | null = null;
-        try {
-          summary = await getVideoSummaryForVideo(
-            video.id,
-            video.title,
-            video.description
-          );
-        } catch (err) {
-          if (err instanceof LoginRequiredError) {
-            console.warn(
-              `  Skipping login-required video "${video.title}" (${video.id})`
-            );
-            continue;
-          }
-          throw err;
-        }
+        const summary = await getVideoSummaryForVideo(
+          video.id,
+          video.title,
+          video.description
+        );
 
         if (!summary) {
           console.log(`  No content for "${video.title}" — queuing for retry.`);
