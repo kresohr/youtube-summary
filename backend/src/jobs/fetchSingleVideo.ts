@@ -1,9 +1,6 @@
 import { query } from "../lib/db.js";
 import { extractVideoId } from "./geminiSummary.js";
-import {
-  getVideoSummaryForVideo,
-  fetchVideoDurations,
-} from "./fetchVideos.js";
+import { getVideoSummaryForVideo, fetchVideoDurations } from "./fetchVideos.js";
 
 import { randomUUID } from "crypto";
 
@@ -222,7 +219,11 @@ async function processSingleVideo(
     console.log(
       `[SingleVideo] Step 4: Running Gemini summarisation for ${videoId}...`
     );
-    const summary = await getVideoSummaryForVideo(videoId, metadata.title, null);
+    const summary = await getVideoSummaryForVideo(
+      videoId,
+      metadata.title,
+      null
+    );
 
     if (!summary) {
       jobs.set(jobId, {

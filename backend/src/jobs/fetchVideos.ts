@@ -146,9 +146,7 @@ export async function getVideoSummaryForVideo(
   try {
     console.log(`[Summary] Gemini summarisation for ${videoId}...`);
     const summary = await summarizeVideo(videoUrl);
-    console.log(
-      `[Summary] Succeeded for ${videoId}: ${summary.length} chars`
-    );
+    console.log(`[Summary] Succeeded for ${videoId}: ${summary.length} chars`);
     return summary;
   } catch (err) {
     console.warn(

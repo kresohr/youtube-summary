@@ -6,16 +6,16 @@ _Warning: This project was 'vibecoded' with guided assistance and personal archi
 
 ## Tech Stack
 
-| Layer                | Technology                                                                                 |
-| -------------------- | ------------------------------------------------------------------------------------------ |
-| **Frontend**         | Vue.js 3 + TypeScript, Vite, Vue Router, Axios                                             |
-| **Backend**          | Express.js 5 + TypeScript (Node 22), node-cron                                             |
-| **Database**         | PostgreSQL 16 (raw SQL via `pg` driver)                                                    |
-| **Transcripts**      | Gemini multimodal (processes video directly — no separate transcript extraction)             |
-| **AI Summaries**     | Gemini REST API (`gemini-2.5-flash` model, multimodal video understanding)                   |
-| **Auth**             | JWT (jsonwebtoken) + bcrypt                                                                |
-| **Containerization** | Docker + Docker Compose                                                                    |
-| **Reverse Proxy**    | Nginx (production only, with Let's Encrypt SSL)                                            |
+| Layer                | Technology                                                                       |
+| -------------------- | -------------------------------------------------------------------------------- |
+| **Frontend**         | Vue.js 3 + TypeScript, Vite, Vue Router, Axios                                   |
+| **Backend**          | Express.js 5 + TypeScript (Node 22), node-cron                                   |
+| **Database**         | PostgreSQL 16 (raw SQL via `pg` driver)                                          |
+| **Transcripts**      | Gemini multimodal (processes video directly — no separate transcript extraction) |
+| **AI Summaries**     | Gemini REST API (`gemini-2.5-flash` model, multimodal video understanding)       |
+| **Auth**             | JWT (jsonwebtoken) + bcrypt                                                      |
+| **Containerization** | Docker + Docker Compose                                                          |
+| **Reverse Proxy**    | Nginx (production only, with Let's Encrypt SSL)                                  |
 
 ## Project Structure
 
@@ -85,21 +85,21 @@ Copy `.env.example` to `.env` and fill in the values:
 cp .env.example .env
 ```
 
-| Variable             | Description                                                                                                                                   | Required |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| `DB_USER`            | PostgreSQL username                                                                                                                           | ✅       |
-| `DB_PASSWORD`        | PostgreSQL password                                                                                                                           | ✅       |
-| `DB_NAME`            | PostgreSQL database name                                                                                                                      | ✅       |
-| `JWT_SECRET`         | Secret for JWT tokens — generate with `openssl rand -base64 32`                                                                               | ✅       |
-| `YOUTUBE_API_KEY`    | YouTube Data API v3 key — used for channel/video discovery and metadata                                                                       | ✅       |
-| `GEMINI_API_KEY`     | Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey) — powers all video summarisation via multimodal understanding | ✅       |
-| `APP_URL`            | Public URL of the app (e.g. `https://yourdomain.com`)                                                                                         | ✅       |
-| `CORS_ORIGIN`        | Allowed frontend origin for CORS (e.g. `https://yourdomain.com`)                                                                              | ✅       |
-| `NODE_ENV`           | `production` or `development`                                                                                                                 | ✅       |
-| `PORT`               | Backend port inside the container (default `4000`)                                                                                            | ❌       |
-| `HTTP_PORT`          | Host HTTP port for Nginx (default `80`, production only)                                                                                      | ❌       |
-| `HTTPS_PORT`         | Host HTTPS port for Nginx (default `443`, production only)                                                                                    | ❌       |
-| `SSL_CERT_PATH`      | Path to Let's Encrypt certs (default `/etc/letsencrypt`)                                                                                      | ❌       |
+| Variable          | Description                                                                                                                                  | Required |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| `DB_USER`         | PostgreSQL username                                                                                                                          | ✅       |
+| `DB_PASSWORD`     | PostgreSQL password                                                                                                                          | ✅       |
+| `DB_NAME`         | PostgreSQL database name                                                                                                                     | ✅       |
+| `JWT_SECRET`      | Secret for JWT tokens — generate with `openssl rand -base64 32`                                                                              | ✅       |
+| `YOUTUBE_API_KEY` | YouTube Data API v3 key — used for channel/video discovery and metadata                                                                      | ✅       |
+| `GEMINI_API_KEY`  | Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey) — powers all video summarisation via multimodal understanding | ✅       |
+| `APP_URL`         | Public URL of the app (e.g. `https://yourdomain.com`)                                                                                        | ✅       |
+| `CORS_ORIGIN`     | Allowed frontend origin for CORS (e.g. `https://yourdomain.com`)                                                                             | ✅       |
+| `NODE_ENV`        | `production` or `development`                                                                                                                | ✅       |
+| `PORT`            | Backend port inside the container (default `4000`)                                                                                           | ❌       |
+| `HTTP_PORT`       | Host HTTP port for Nginx (default `80`, production only)                                                                                     | ❌       |
+| `HTTPS_PORT`      | Host HTTPS port for Nginx (default `443`, production only)                                                                                   | ❌       |
+| `SSL_CERT_PATH`   | Path to Let's Encrypt certs (default `/etc/letsencrypt`)                                                                                     | ❌       |
 
 ## Quick Start — Local Development
 
