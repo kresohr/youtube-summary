@@ -2,13 +2,14 @@
 
 ## Architecture Overview
 
-Three-service Docker Compose app: **Vue 3 frontend** → **Express 5 backend** → **PostgreSQL 16**. No ORM — all database access uses raw SQL via the `pg` driver through a shared `query()` helper (`backend/src/lib/db.ts`). The backend also runs a **node-cron** job (daily at 05:00 + on startup) that orchestrates: YouTube Data API fetch → transcript extraction via `youtube-transcript-plus` → AI summary generation via OpenRouter → DB insert.
+Three-service Docker Compose app: **Vue 3 frontend** → **Express 5 backend** → **PostgreSQL 16**. No ORM — all database access uses raw SQL via the `pg` driver through a shared `query()` helper (`backend/src/lib/db.ts`). The backend also runs a **node-cron** job (daily at 05:00 + on startup) that orchestrates: YouTube Data API fetch → Gemini REST API multimodal video summarisation → DB insert.
 
 ## Project Layout
 
 - `backend/src/server.ts` — Express app entry, cron scheduler, health check
-- `backend/src/jobs/fetchVideos.ts` — Core pipeline: fetch channels → get videos → transcribe → summarize → save
-- `backend/src/jobs/youtubeTranscript.ts` — Transcript extraction wrapper
+- `backend/src/jobs/fetchVideos.ts` — Core pipeline: fetch channels → get videos → summarize via Gemini → save
+- `backend/src/jobs/fetchSingleVideo.ts` — On-demand single-video summarisation (async job queue)
+- `backend/src/jobs/geminiSummary.ts` — Gemini REST API invocation (multimodal video summary) + `extractVideoId()` utility
 - `backend/src/routes/` — Express routers: `videos.ts` (public), `channels.ts` + `admin.ts` (JWT-protected), `auth.ts` (login)
 - `backend/src/lib/db.ts` — `pg` Pool singleton, exports `query<T>(text, params)`
 - `backend/src/middleware/auth.ts` — JWT Bearer token verification, extends `Request` as `AuthRequest`
@@ -69,13 +70,12 @@ cd backend && npm run seed
 ## External Dependencies
 
 - **YouTube Data API v3** (`YOUTUBE_API_KEY`) — channel validation + video search
-- **OpenRouter API** (`OPENROUTER_API_KEY`) — AI summary generation (model: `openrouter/free`)
-- **youtube-transcript-plus** — scrapes YouTube transcripts (no API key, but can be flaky)
+- **Gemini REST API** (`GEMINI_API_KEY`) — multimodal video summarisation (`gemini-2.5-flash` model). Sends the YouTube URL directly; Gemini processes the video natively (audio + video understanding).
 
 ## Gotchas
 
 - Backend uses Express **v5** (not v4) — async route errors are handled natively, but the project still uses explicit try/catch in every handler.
-- The transcript fetch can fail silently; the pipeline falls back to video description when transcript is too short (<100 chars).
+- If Gemini fails to summarise a video (e.g. too new, or API error), it is queued to `pending_videos` for one automatic retry on the next cron run.
 - The `fetchAndSummarizeVideos` job processes channels sequentially and videos within each channel sequentially — no parallelism by design.
 - Frontend derives the channel filter list from video data (not from a dedicated public channels endpoint), since `/api/channels` requires auth.
 - The `MarkdownRenderer` intentionally avoids `v-html` for security — extend it by adding cases to `renderToken()` / `renderInlineTokens()`.

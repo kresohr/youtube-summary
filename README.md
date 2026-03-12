@@ -1,6 +1,6 @@
 # YouTube Video Summary Automation System
 
-Automated system that fetches the latest videos from configured YouTube channels, generates AI-powered summaries via Gemini CLI, and displays them on a responsive web interface. Runs as a daily cron job inside Docker.
+Automated system that fetches the latest videos from configured YouTube channels, generates AI-powered summaries via the Gemini REST API (multimodal video understanding), and displays them on a responsive web interface. Runs as a daily cron job inside Docker.
 
 _Warning: This project was 'vibecoded' with guided assistance and personal architecture choosing from my side. Make sure you double-check all security related stuff if you plan to use it for production._
 
@@ -11,8 +11,8 @@ _Warning: This project was 'vibecoded' with guided assistance and personal archi
 | **Frontend**         | Vue.js 3 + TypeScript, Vite, Vue Router, Axios                                             |
 | **Backend**          | Express.js 5 + TypeScript (Node 22), node-cron                                             |
 | **Database**         | PostgreSQL 16 (raw SQL via `pg` driver)                                                    |
-| **Transcripts**      | `yt-dlp` CLI (Tier 2 / Tier 3 fallback transcript extraction)                              |
-| **AI Summaries**     | Gemini CLI (primary, multimodal) → yt-dlp + Gemini (Tier 2) → OpenRouter (Tier 3 fallback) |
+| **Transcripts**      | Gemini multimodal (processes video directly — no separate transcript extraction)             |
+| **AI Summaries**     | Gemini REST API (`gemini-2.5-flash` model, multimodal video understanding)                   |
 | **Auth**             | JWT (jsonwebtoken) + bcrypt                                                                |
 | **Containerization** | Docker + Docker Compose                                                                    |
 | **Reverse Proxy**    | Nginx (production only, with Let's Encrypt SSL)                                            |
@@ -45,10 +45,9 @@ youtube-summary/
 │       │   ├── videos.ts     # GET  /api/videos (public)
 │       │   └── admin.ts      # POST /api/admin/trigger-fetch (protected)
 │       └── jobs/
-│           ├── fetchVideos.ts        # Orchestrates fetch → three-tier summary → save
+│           ├── fetchVideos.ts        # Orchestrates fetch → Gemini summary → save
 │           ├── fetchSingleVideo.ts   # On-demand single-video summarisation (job queue)
-│           ├── geminiSummary.ts      # Gemini CLI invocation (Tier 1 direct URL, Tier 2 transcript)
-│           └── youtubeTranscript.ts  # yt-dlp transcript extraction (Tier 2 / Tier 3 input)
+│           └── geminiSummary.ts      # Gemini REST API invocation (multimodal video summary)
 │
 ├── frontend/
 │   ├── Dockerfile            # Multi-stage: Vite build → Nginx static server
@@ -77,8 +76,6 @@ youtube-summary/
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) (v2+)
 - A [YouTube Data API v3](https://console.cloud.google.com/apis/library/youtube.googleapis.com) key
 - A [Gemini API key](https://aistudio.google.com/app/apikey) from Google AI Studio (free tier available)
-- An [OpenRouter](https://openrouter.ai/) API key (optional — Tier 3 last-resort fallback only)
-- [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) installed on the host / in the Docker image
 
 ## Environment Variables
 
@@ -95,8 +92,7 @@ cp .env.example .env
 | `DB_NAME`            | PostgreSQL database name                                                                                                                      | ✅       |
 | `JWT_SECRET`         | Secret for JWT tokens — generate with `openssl rand -base64 32`                                                                               | ✅       |
 | `YOUTUBE_API_KEY`    | YouTube Data API v3 key — used for channel/video discovery and metadata                                                                       | ✅       |
-| `GEMINI_API_KEY`     | Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey) — drives Tier 1 (direct URL) and Tier 2 (transcript) summaries | ✅       |
-| `OPENROUTER_API_KEY` | OpenRouter API key — Tier 3 last-resort fallback. Completely optional if `GEMINI_API_KEY` is set.                                             | ❌       |
+| `GEMINI_API_KEY`     | Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey) — powers all video summarisation via multimodal understanding | ✅       |
 | `APP_URL`            | Public URL of the app (e.g. `https://yourdomain.com`)                                                                                         | ✅       |
 | `CORS_ORIGIN`        | Allowed frontend origin for CORS (e.g. `https://yourdomain.com`)                                                                              | ✅       |
 | `NODE_ENV`           | `production` or `development`                                                                                                                 | ✅       |
@@ -259,7 +255,7 @@ Each run:
 1. Queries all configured YouTube channels from the database
 2. Fetches videos published in the last 24 hours via the YouTube Data API
 3. Skips videos already in the database
-4. Runs the three-tier summary cascade (see [Summary Pipeline](#summary-pipeline))
+4. Runs the Gemini summary pipeline (see [Summary Pipeline](#summary-pipeline))
 5. Saves video metadata and summary to PostgreSQL
 
 You can also trigger a fetch manually from the Admin Dashboard.
@@ -310,15 +306,9 @@ The database is initialized automatically by `backend/init.sql` when the Postgre
 
 ## Summary Pipeline
 
-Each video goes through a three-tier cascade — the first tier that succeeds is used:
+Each video is summarised by sending its YouTube URL directly to the **Gemini REST API** (`gemini-2.5-flash` model). Gemini processes the video natively via multimodal understanding (audio + video) and returns a structured Markdown summary — no separate transcript extraction step is needed.
 
-| Tier                    | Method                                                                                     | How it works                                                                                       | Requires                            |
-| ----------------------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| **1 — Gemini direct**   | Gemini CLI receives the YouTube URL                                                        | Gemini processes the video natively via multimodal understanding — no transcript extraction needed | `GEMINI_API_KEY`                    |
-| **2 — yt-dlp + Gemini** | `yt-dlp` extracts transcript → Gemini CLI summarises it                                    | Used when Tier 1 fails (e.g. very new videos not yet indexed by Gemini)                            | `GEMINI_API_KEY` + `yt-dlp` on PATH |
-| **3 — OpenRouter**      | Best available text (yt-dlp transcript or video description) sent to OpenRouter free model | Last resort when Gemini is unavailable                                                             | `OPENROUTER_API_KEY`                |
-
-If all tiers fail the video is queued in `pending_videos` for one automatic retry on the next cron run.
+If Gemini fails (e.g. very new video not yet indexed, or a temporary API error), the video is queued in `pending_videos` for one automatic retry on the next cron run.
 
 ### Getting a Gemini API Key
 
