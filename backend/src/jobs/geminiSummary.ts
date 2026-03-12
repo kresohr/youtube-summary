@@ -1,24 +1,15 @@
-import { execFile } from "node:child_process";
-import * as path from "node:path";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
-
 /**
- * Path to the Gemini CLI binary installed as an npm dependency.
- *   dev  (tsx):  __dirname = backend/src/jobs  → ../../../node_modules/.bin/gemini
- *   prod (tsc):  __dirname = backend/dist/jobs → ../../../node_modules/.bin/gemini
- * Both resolve to backend/node_modules/.bin/gemini
+ * Gemini REST API — multimodal video summarisation.
+ *
+ * Sends the YouTube URL directly to Gemini which processes the video
+ * natively (audio + video understanding) and returns a structured
+ * Markdown summary in a single API call.
+ *
+ * Auth: uses GEMINI_API_KEY from the environment.
  */
-const GEMINI_BIN = path.join(
-  __dirname,
-  "..",
-  "..",
-  "..",
-  "node_modules",
-  ".bin",
-  "gemini"
-);
+
+const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
 const SUMMARY_FORMAT_INSTRUCTIONS = `
 You MUST always respond in valid Markdown using EXACTLY the following structure — no deviations, no extra sections, no plain text:
@@ -50,137 +41,102 @@ Rules:
 `.trim();
 
 /**
- * Invoke Gemini CLI in headless / one-shot mode.
+ * Call the Gemini REST API to summarise a YouTube video by URL.
  *
- * Auth: GEMINI_API_KEY is injected directly into the child process environment
- * so the global user session (~/.gemini) is never touched and the call is safe
- * to run from cron / Docker without any prior interactive login.
+ * Gemini processes the video via multimodal understanding — no separate
+ * transcript extraction step is needed.
  *
- * Output format: --output-format json → { response: string, stats: object }
+ * @param videoUrl  Full YouTube watch URL (e.g. https://youtube.com/watch?v=…)
+ * @returns         Markdown summary string
  */
-async function runGemini(prompt: string, timeoutMs: number): Promise<string> {
+export async function summarizeVideo(videoUrl: string): Promise<string> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
 
-  let stdout: string;
-  try {
-    const result = await execFileAsync(
-      GEMINI_BIN,
-      [
-        "--output-format",
-        "json",
-        "--approval-mode=yolo",
-        "--model",
-        "flash", // gemini-2.5-flash — fast and available on free tier
-        "--prompt",
-        prompt,
-      ],
-      {
-        timeout: timeoutMs,
-        maxBuffer: 10 * 1024 * 1024, // 10 MB
-        env: {
-          ...process.env,
-          GEMINI_API_KEY: apiKey,
-          // Suppress colour codes and interactive prompts
-          NO_COLOR: "1",
-          TERM: "dumb",
-          // Opt-out of telemetry in automated runs
-          GEMINI_TELEMETRY: "disabled",
-          // Clear VS Code IDE integration env vars to prevent the
-          // one-time "Connect VS Code to Gemini CLI?" interactive nudge
-          // from blocking the non-interactive child process.
-          GEMINI_CLI_IDE_SERVER_PORT: "",
-          GEMINI_CLI_IDE_WORKSPACE_PATH: "",
-        },
-      }
-    );
-    stdout = result.stdout;
-  } catch (err: unknown) {
-    // execFile rejects with an object that carries .stdout/.stderr when the
-    // process exits non-zero or times out.
-    const execErr = err as {
-      stdout?: string;
-      stderr?: string;
-      message?: string;
-    };
-    const detail =
-      execErr.stderr?.slice(0, 400) ?? execErr.message ?? String(err);
-    throw new Error(`Gemini CLI process failed: ${detail}`);
-  }
-
-  let parsed: { response?: string; error?: { message?: string } };
-  try {
-    // The CLI may emit a small progress header before the JSON on some builds —
-    // find the first '{' so we parse only the JSON portion.
-    const jsonStart = stdout.indexOf("{");
-    if (jsonStart === -1) {
-      throw new Error("no JSON object found in output");
-    }
-    parsed = JSON.parse(stdout.slice(jsonStart));
-  } catch (parseErr) {
-    throw new Error(
-      `Gemini CLI returned non-JSON output (${stdout.length} chars): ${stdout.slice(0, 300)}`
-    );
-  }
-
-  if (parsed.error) {
-    throw new Error(
-      `Gemini API error: ${parsed.error.message ?? JSON.stringify(parsed.error)}`
-    );
-  }
-
-  const response = parsed.response?.trim() ?? "";
-  if (response.length < 50) {
-    throw new Error(
-      `Gemini returned an empty or too-short response (${response.length} chars)`
-    );
-  }
-
-  return response;
-}
-
-/**
- * Tier 1 — Pass the YouTube URL directly to Gemini.
- * Gemini processes the video natively (multimodal) without needing a
- * pre-fetched transcript. This is the fastest and highest-quality path.
- */
-export async function summarizeVideoWithGemini(
-  videoUrl: string
-): Promise<string> {
-  console.log(`[Gemini] Tier 1: direct URL summarization for ${videoUrl}`);
+  console.log(`[Gemini] Summarising video: ${videoUrl}`);
 
   const prompt =
     `Summarize this YouTube video using the exact Markdown structure specified.\n\n` +
     `Video URL: ${videoUrl}\n\n` +
     SUMMARY_FORMAT_INSTRUCTIONS;
 
-  // 2 min timeout — video understanding can be slow for long videos
-  return runGemini(prompt, 120_000);
+  const url = `${GEMINI_BASE_URL}/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+
+  const body = {
+    contents: [
+      {
+        parts: [
+          { text: prompt },
+          {
+            fileData: {
+              mimeType: "video/mp4",
+              fileUri: videoUrl,
+            },
+          },
+        ],
+      },
+    ],
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 4096,
+    },
+  };
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(120_000), // 2 min timeout
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => response.statusText);
+    throw new Error(
+      `Gemini API error (HTTP ${response.status}): ${errorText.slice(0, 400)}`
+    );
+  }
+
+  const data = await response.json();
+
+  // Navigate the Gemini REST API response structure
+  const candidate = data.candidates?.[0];
+  if (!candidate) {
+    const blockReason = data.promptFeedback?.blockReason;
+    throw new Error(
+      `Gemini returned no candidates${blockReason ? ` (blocked: ${blockReason})` : ""}`
+    );
+  }
+
+  const text = candidate.content?.parts?.[0]?.text?.trim() ?? "";
+  if (text.length < 50) {
+    throw new Error(
+      `Gemini returned an empty or too-short response (${text.length} chars)`
+    );
+  }
+
+  console.log(`[Gemini] Summary received: ${text.length} chars`);
+  return text;
 }
 
+// ─── Utility ──────────────────────────────────────────────────────────────────
+
 /**
- * Tier 2 — Feed a pre-fetched transcript (from yt-dlp) to Gemini.
- * Used when Tier 1 (direct URL) fails but yt-dlp successfully extracted
- * a transcript.
+ * Extract the 11-character YouTube video ID from a URL or bare ID string.
+ * Supports youtube.com/watch?v=, youtu.be/, and plain 11-char IDs.
  */
-export async function summarizeTranscriptWithGemini(
-  transcript: string,
-  videoTitle: string
-): Promise<string> {
-  console.log(`[Gemini] Tier 2: transcript summarization for "${videoTitle}"`);
-
-  // Gemini handles much larger context than OpenRouter free tier
-  const maxChars = 12_000;
-  const truncated =
-    transcript.length > maxChars
-      ? transcript.substring(0, maxChars) + "..."
-      : transcript;
-
-  const prompt =
-    `Summarize this YouTube video using the exact Markdown structure specified.\n\n` +
-    `Title: ${videoTitle}\n\n` +
-    `Transcript:\n${truncated}\n\n` +
-    SUMMARY_FORMAT_INSTRUCTIONS;
-
-  return runGemini(prompt, 90_000);
+export function extractVideoId(input: string): string | null {
+  try {
+    if (/^[a-zA-Z0-9_-]{11}$/.test(input)) return input;
+    const url = new URL(input);
+    if (url.hostname.includes("youtu.be")) {
+      const id = url.pathname.slice(1);
+      return id || null;
+    }
+    const v = url.searchParams.get("v");
+    if (v) return v;
+    const m = url.pathname.match(/([a-zA-Z0-9_-]{11})/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
 }
