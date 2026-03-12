@@ -1,22 +1,9 @@
 FROM node:22-alpine
 
 # 1. Install build dependencies required for native modules (bcrypt)
-#    + Chromium and all its Alpine system dependencies for Puppeteer
 RUN apk add --no-cache \
     python3 make g++ \
-    chromium \
-    nss \
-    freetype \
-    harfbuzz \
-    ca-certificates \
-    ttf-freefont \
-    udev \
-    ffmpeg \
-    yt-dlp
-
-# Tell Puppeteer to use the system Chromium and skip downloading its own
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+    ca-certificates
 
 WORKDIR /app
 
