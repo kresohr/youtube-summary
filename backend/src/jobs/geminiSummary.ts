@@ -11,6 +11,20 @@
 const GEMINI_MODEL = "gemini-2.5-flash";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
+/**
+ * Typed error for Gemini HTTP failures.
+ * Exposes the HTTP status so callers can distinguish 429 (quota) from
+ * 403 (permission denied) from other errors.
+ */
+export class GeminiApiError extends Error {
+  public readonly status: number;
+  constructor(status: number, body: string) {
+    super(`Gemini API error (HTTP ${status}): ${body.slice(0, 400)}`);
+    this.name = "GeminiApiError";
+    this.status = status;
+  }
+}
+
 const SUMMARY_FORMAT_INSTRUCTIONS = `
 You MUST always respond in valid Markdown using EXACTLY the following structure — no deviations, no extra sections, no plain text:
 
@@ -91,9 +105,7 @@ export async function summarizeVideo(videoUrl: string): Promise<string> {
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => response.statusText);
-    throw new Error(
-      `Gemini API error (HTTP ${response.status}): ${errorText.slice(0, 400)}`
-    );
+    throw new GeminiApiError(response.status, errorText);
   }
 
   const data = await response.json();

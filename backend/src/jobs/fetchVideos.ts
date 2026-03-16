@@ -1,5 +1,8 @@
 import { query } from "../lib/db.js";
-import { summarizeVideo } from "./geminiSummary.js";
+import { summarizeVideo, GeminiApiError } from "./geminiSummary.js";
+
+/** Maximum duration (in seconds) for a video to be considered a YouTube Short. */
+const SHORTS_MAX_DURATION_SECONDS = 60;
 
 interface YouTubeVideoItem {
   id: { videoId: string };
@@ -133,8 +136,11 @@ async function fetchLatestVideos(
  * Gemini processes the YouTube URL directly using multimodal understanding
  * (audio + video) — no separate transcript extraction is needed.
  *
- * Returns null when Gemini fails — caller should enqueue the video to
- * pending_videos for a later retry.
+ * Returns null when Gemini fails with a recoverable/unknown error —
+ * caller should enqueue the video to pending_videos for a later retry.
+ *
+ * Re-throws GeminiApiError for 429 (quota) and 403 (permission denied)
+ * so the caller can handle them distinctly.
  */
 export async function getVideoSummaryForVideo(
   videoId: string,
@@ -149,6 +155,9 @@ export async function getVideoSummaryForVideo(
     console.log(`[Summary] Succeeded for ${videoId}: ${summary.length} chars`);
     return summary;
   } catch (err) {
+    if (err instanceof GeminiApiError && (err.status === 429 || err.status === 403)) {
+      throw err; // Let caller handle quota / permission errors
+    }
     console.warn(
       `[Summary] Failed for ${videoId}: ${err instanceof Error ? err.message : String(err)}`
     );
@@ -158,6 +167,15 @@ export async function getVideoSummaryForVideo(
 
 /** Retry pending videos that previously had no usable content. */
 async function processPendingVideos(): Promise<void> {
+  // Purge any Shorts that were queued before the filter was in place
+  const purged = await query(
+    "DELETE FROM pending_videos WHERE duration_seconds IS NOT NULL AND duration_seconds <= $1",
+    [SHORTS_MAX_DURATION_SECONDS]
+  );
+  if (purged.rowCount && purged.rowCount > 0) {
+    console.log(`[Pending] Purged ${purged.rowCount} queued Short(s).`);
+  }
+
   const pendingResult = await query(
     "SELECT * FROM pending_videos ORDER BY added_at ASC",
     []
@@ -221,6 +239,20 @@ async function processPendingVideos(): Promise<void> {
       ]);
       console.log(`[Pending] ✓ Processed: ${row.title}`);
     } catch (error) {
+      // 429 → bubble up so the cron retry wrapper can sleep & retry
+      if (error instanceof GeminiApiError && error.status === 429) {
+        throw error;
+      }
+      // 403 → permanently skip this video
+      if (error instanceof GeminiApiError && error.status === 403) {
+        console.log(
+          `[Pending] Permission denied for "${row.title}" (${row.video_id}) — removing from queue.`
+        );
+        await query("DELETE FROM pending_videos WHERE video_id = $1", [
+          row.video_id,
+        ]);
+        continue;
+      }
       console.error(
         `[Pending] Error processing ${row.title}:`,
         error instanceof Error ? error.message : "Unknown error"
@@ -259,8 +291,24 @@ export async function fetchAndSummarizeVideos(
         `[${new Date().toISOString()}] Processing channel: ${channel.channel_name}`
       );
 
-      const videos = await fetchLatestVideos(channel.channel_id, 24);
-      console.log(`  Found ${videos.length} videos in last 24h`);
+      const allVideos = await fetchLatestVideos(channel.channel_id, 24);
+      console.log(`  Found ${allVideos.length} videos in last 24h`);
+
+      // Filter out YouTube Shorts (≤ 60 s)
+      const videos = allVideos.filter((v) => {
+        if (v.durationSeconds !== null && v.durationSeconds <= SHORTS_MAX_DURATION_SECONDS) {
+          console.log(
+            `  [Shorts] Skipping Short: ${v.title} (${v.durationSeconds}s)`
+          );
+          return false;
+        }
+        return true;
+      });
+      if (videos.length < allVideos.length) {
+        console.log(
+          `  Filtered out ${allVideos.length - videos.length} Short(s), ${videos.length} video(s) remaining`
+        );
+      }
 
       for (const video of videos) {
         const [existsInVideos, existsInPending] = await Promise.all([
@@ -279,11 +327,27 @@ export async function fetchAndSummarizeVideos(
 
         console.log(`  Processing: ${video.title} (${video.id})`);
 
-        const summary = await getVideoSummaryForVideo(
-          video.id,
-          video.title,
-          video.description
-        );
+        let summary: string | null;
+        try {
+          summary = await getVideoSummaryForVideo(
+            video.id,
+            video.title,
+            video.description
+          );
+        } catch (err) {
+          // 429 → bubble up so the cron retry wrapper can sleep & retry
+          if (err instanceof GeminiApiError && err.status === 429) {
+            throw err;
+          }
+          // 403 → permanently skip this video, do NOT queue to pending
+          if (err instanceof GeminiApiError && err.status === 403) {
+            console.log(
+              `  [403] Permission denied for "${video.title}" (${video.id}) — skipping permanently.`
+            );
+            continue;
+          }
+          throw err; // unexpected — let outer catch handle
+        }
 
         if (!summary) {
           console.log(`  No content for "${video.title}" — queuing for retry.`);
@@ -324,6 +388,10 @@ export async function fetchAndSummarizeVideos(
         console.log(`  ✓ Saved video: ${video.title}`);
       }
     } catch (error) {
+      // 429 must propagate to the cron retry wrapper
+      if (error instanceof GeminiApiError && error.status === 429) {
+        throw error;
+      }
       console.error(
         `Error processing channel ${channel.channel_name}:`,
         error instanceof Error ? error.message : "Unknown error"
